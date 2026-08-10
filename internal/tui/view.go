@@ -240,7 +240,11 @@ func (m Model) renderPaletteOverlay() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(White).Bold(true).Render("Commands"))
+	title := "Commands"
+	if m.paletteMode == "models" {
+		title = "Models"
+	}
+	b.WriteString(lipgloss.NewStyle().Foreground(White).Bold(true).Render(title))
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(FaintGray).Render("Type to filter, ↑↓ to navigate, enter to select, esc to close"))
 	b.WriteString("\n\n")

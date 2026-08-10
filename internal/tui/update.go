@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"time"
+
+	"fakemodelapi/internal/auth"
+	"fakemodelapi/internal/provider"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -50,44 +55,80 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 
 	case chatResponseChunkMsg:
+		// This message is sent from the stream goroutine; just update the buffer.
 		m.streamBuffer += msg.chunk
 		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
 			m.messages[len(m.messages)-1].Content = m.streamBuffer
 		}
 		m.viewport.SetContent(m.renderChatContent())
 		m.viewport.GotoBottom()
-		full := "Ini balasan dummy dari " + m.provider + ": '" + m.messages[len(m.messages)-2].Content + "' diterima. Server " + map[bool]string{true: "on", false: "off"}[m.serverOn] + " di " + m.endpoint + " dengan model " + m.modelName + "."
-		if len(m.streamBuffer) < len(full) {
-			remaining := full[len(m.streamBuffer):]
-			n := 6
-			if len(remaining) < n {
-				n = len(remaining)
-			}
-			chunk := remaining[:n]
-			cmds = append(cmds, func() tea.Msg {
-				time.Sleep(35 * time.Millisecond)
-				return chatResponseChunkMsg{chunk: chunk}
-			})
-		} else {
-			cmds = append(cmds, func() tea.Msg {
-				time.Sleep(50 * time.Millisecond)
-				return chatDoneMsg{}
-			})
+		// Schedule reading the next chunk from the provider's channel.
+		if m.streamChan != nil {
+			cmds = append(cmds, readNextChunk(m.streamChan))
 		}
+		return m, tea.Batch(cmds...)
+
+	case streamStartMsg:
+		m.streamChan = msg.ch
+		if msg.chunk.Delta != "" {
+			m.streamBuffer += msg.chunk.Delta
+			if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
+				m.messages[len(m.messages)-1].Content = m.streamBuffer
+			}
+		}
+		m.viewport.SetContent(m.renderChatContent())
+		m.viewport.GotoBottom()
+		cmds = append(cmds, readNextChunk(m.streamChan))
 		return m, tea.Batch(cmds...)
 
 	case chatDoneMsg:
 		m.isStreaming = false
 		m.streamBuffer = ""
+		m.streamChan = nil
 		m.viewport.SetContent(m.renderChatContent())
 		m.viewport.GotoBottom()
 		return m, tea.Batch(cmds...)
+
+	case authDoneMsg:
+		if msg.result.Error != nil {
+			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "login gagal: " + msg.result.Error.Error()})
+		} else {
+			// Simpan session (cookies + bearer token)
+			err := auth.SaveSessionWithToken(msg.provider, msg.result.Token, msg.result.Cookies)
+			if err != nil {
+				m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "gagal menyimpan session: " + err.Error()})
+			} else if msg.result.Token == "" {
+				m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: fmt.Sprintf("login berhasil ✓, %d cookies disimpan (tanpa token)", len(msg.result.Cookies))})
+			} else {
+				m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: fmt.Sprintf("login berhasil ✓, %d cookies + token disimpan", len(msg.result.Cookies))})
+			}
+		}
+		m.viewport.SetContent(m.renderChatContent())
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case loginMsgInit:
+		m.loginProvider = msg.provider
+		m.loginProgress = msg.progress
+		m.loginDone = msg.done
+		return m, m.nextLoginMsg()
+
+	case authProgressMsg:
+		// Update pesan terakhir assistant dengan progress
+		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
+			m.messages[len(m.messages)-1].Content = msg.text
+		}
+		m.viewport.SetContent(m.renderChatContent())
+		m.viewport.GotoBottom()
+		// Lanjutkan mendengarkan progress dari goroutine login
+		return m, m.nextLoginMsg()
 
 	case tea.KeyMsg:
 		if m.showCmdPalette {
 			switch msg.String() {
 			case "esc", "ctrl+p":
 				m.showCmdPalette = false
+				m.paletteMode = ""
 				return m, nil
 			case "up":
 				if m.selectedIdx > 0 {
@@ -100,6 +141,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "enter":
+				if m.paletteMode == "models" {
+					models := m.activeProvider.Models()
+					if m.selectedIdx >= 0 && m.selectedIdx < len(models) {
+						sel := models[m.selectedIdx]
+						m.activeProvider.SetModel(sel.ID)
+						m.modelName = sel.DisplayName
+						m.showCmdPalette = false
+						m.paletteMode = ""
+						m.filteredCmds = []string{}
+						m.selectedIdx = 0
+					}
+					return m, nil
+				}
 				if len(m.filteredCmds) > 0 {
 					cmd := m.filteredCmds[m.selectedIdx]
 					m.textarea.SetValue(cmd + " ")
@@ -112,9 +166,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			default:
 				filter := m.textarea.Value()
-				if filter!= "" {
+				if filter != "" {
+					list := m.commandList
+					if m.paletteMode == "models" {
+						list = nil
+						for _, mo := range m.activeProvider.Models() {
+							list = append(list, mo.DisplayName)
+						}
+					}
 					var f []string
-					for _, c := range m.commandList {
+					for _, c := range list {
 						if strings.Contains(c, strings.TrimSpace(filter)) {
 							f = append(f, c)
 						}
@@ -167,6 +228,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tabIndex = (m.tabIndex + 1) % len(m.providers)
 			m.provider = m.providers[m.tabIndex]
 			m.modelName = m.models[m.tabIndex]
+			m.activeProvider = provider.MustGet(m.providerKeys[m.tabIndex])
+			m.activeProvider.Reset()
 			return m, nil
 		case "esc":
 			if m.textarea.Value() == "" && len(m.messages) == 0 {
@@ -211,10 +274,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.viewport.GotoBottom()
 					return m, nil
 				case "/status":
-					status := "server: off\nproviders: DeepSeek, Qwen, Gemini\nendpoint: localhost:8000"
-					if m.serverOn {
-						status = "server: on ✓\nproviders: DeepSeek, Qwen, Gemini\nendpoint: localhost:8000\nmodel: " + m.modelName
+					ai := m.activeProvider.AuthStatus()
+					login := "not logged in"
+					if ai.LoggedIn {
+						login = "logged in (" + ai.Username + ")"
 					}
+					server := "off"
+					if m.serverOn {
+						server = "on ✓"
+					}
+					status := fmt.Sprintf("server: %s\nlogin: %s\nprovider: %s\nendpoint: localhost:8000\nmodel: %s",
+						server, login, m.provider, m.modelName)
 					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val}, ChatMsg{Role: "assistant", Content: status})
 					m.showLogo = false
 					m.textarea.Reset()
@@ -225,6 +295,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "/clear":
 					m.messages = []ChatMsg{}
+					m.activeProvider.Reset()
 					m.showLogo = true
 					m.textarea.Reset()
 					m.slashMode = false
@@ -232,17 +303,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.viewport.SetContent("")
 					return m, nil
 				case "/login":
-					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val}, ChatMsg{Role: "assistant", Content: "Opening browser for login... (dummy auth ready)"})
+					cfg, ok := loginConfigs[m.providerKeys[m.tabIndex]]
+					if !ok || cfg.URL == "" {
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: "provider ini belum punya fitur login"})
+						m.showLogo = false
+						m.textarea.Reset()
+						m.slashMode = false
+						m.filteredCmds = []string{}
+						m.viewport.SetContent(m.renderChatContent())
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val})
 					m.showLogo = false
 					m.textarea.Reset()
 					m.slashMode = false
 					m.filteredCmds = []string{}
 					m.viewport.SetContent(m.renderChatContent())
 					m.viewport.GotoBottom()
-					return m, nil
+					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "membuka browser..."})
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, startLogin(cfg, m.providerKeys[m.tabIndex])
 				case "/model":
 					m.showCmdPalette = true
-					m.filteredCmds = []string{"DeepSeek V4 Flash Free", "Qwen3 Coder Plus", "Gemini 2.5 Pro"}
+					m.paletteMode = "models"
+					m.filteredCmds = nil
+					for _, mo := range m.activeProvider.Models() {
+						m.filteredCmds = append(m.filteredCmds, mo.DisplayName)
+					}
 					m.selectedIdx = 0
 					return m, nil
 				default:
@@ -266,11 +356,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: ""})
 			m.viewport.SetContent(m.renderChatContent())
 			m.viewport.GotoBottom()
-			provider := m.provider
-			return m, func() tea.Msg {
-				time.Sleep(100 * time.Millisecond)
-				return chatResponseChunkMsg{chunk: "Ini balasan dummy dari " + provider + ": "}
-			}
+			return m, startStream(m.activeProvider, val)
 		}
 	}
 
@@ -375,3 +461,107 @@ func (m *Model) renderChatContent() string {
 var _ viewport.Model
 var _ textarea.Model
 var _ spinner.Model
+
+// authDoneMsg is sent when the browser login process finishes.
+type authDoneMsg struct {
+	result   *auth.CaptureResult
+	provider string
+}
+
+// authProgressMsg carries progress updates from the login goroutine.
+type authProgressMsg struct {
+	text string
+}
+
+// loginConfigs maps registry provider names to their browser capture settings.
+var loginConfigs = map[string]auth.CaptureSessionInfo{
+	"deepseek": {
+		URL:             "https://chat.deepseek.com",
+		Domain:          ".deepseek.com",
+		TokenStorageKey: "userToken",
+	},
+}
+
+// startLogin kicks off the browser login flow. The actual capture runs in a
+// goroutine; progress updates and the final result are relayed to the TUI
+// through channels consumed by nextLoginMsg.
+func startLogin(cfg auth.CaptureSessionInfo, providerName string) tea.Cmd {
+	return func() tea.Msg {
+		return beginCapture(cfg, providerName)
+	}
+}
+
+func beginCapture(cfg auth.CaptureSessionInfo, providerName string) tea.Msg {
+	progress := make(chan string, 10)
+	done := make(chan *auth.CaptureResult, 1)
+
+	go func() {
+		res := auth.CaptureSession(cfg, 2*time.Minute, progress)
+		done <- res
+	}()
+
+	return loginMsgInit{cfg: cfg, provider: providerName, progress: progress, done: done}
+}
+
+type loginMsgInit struct {
+	cfg      auth.CaptureSessionInfo
+	provider string
+	progress chan string
+	done     chan *auth.CaptureResult
+}
+
+// nextLoginMsg returns a command that waits for the next login event.
+func (m *Model) nextLoginMsg() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case txt := <-m.loginProgress:
+			return authProgressMsg{text: txt}
+		case res := <-m.loginDone:
+			return authDoneMsg{result: res, provider: m.loginProvider}
+		}
+	}
+}
+
+// startStream initiates a streaming request to the provider and returns the command
+// that starts reading from the channel.
+func startStream(p provider.Provider, content string) tea.Cmd {
+	ctx := context.Background()
+	msgs := []provider.Message{{Role: "user", Content: content}}
+
+	ch, err := p.ChatStream(ctx, msgs)
+	if err != nil {
+		return func() tea.Msg {
+			return chatResponseChunkMsg{chunk: "Error: " + err.Error()}
+		}
+	}
+
+	// The first read sets streamChan on the model, which subsequent reads use.
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return chatDoneMsg{}
+		}
+		return streamStartMsg{ch: ch, chunk: chunk}
+	}
+}
+
+// streamStartMsg is sent after the first chunk is read, carrying the channel forward.
+type streamStartMsg struct {
+	ch    <-chan provider.Chunk
+	chunk provider.Chunk
+}
+
+// readNextChunk returns a command that reads the next chunk from a provider's channel.
+func readNextChunk(ch <-chan provider.Chunk) tea.Cmd {
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return chatDoneMsg{}
+		}
+		if chunk.Delta != "" {
+			return chatResponseChunkMsg{chunk: chunk.Delta}
+		}
+		// Skip empty deltas (like finish-only chunks)
+		return chatDoneMsg{}
+	}
+}

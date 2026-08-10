@@ -3,6 +3,9 @@ package tui
 import (
 	"time"
 
+	"fakemodelapi/internal/auth"
+	"fakemodelapi/internal/provider"
+
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -19,37 +22,44 @@ type Model struct {
 	width, height int
 
 	// UI state per plan.md
-	showLogo bool
-	mode string // Build | Plan | Chat
-	provider string
-	modelName string
-	endpoint string
-	variant string
-	serverOn bool
-	version string
-	tipIndex int
+	showLogo   bool
+	mode       string // Build | Plan | Chat
+	provider   string
+	modelName  string
+	endpoint   string
+	variant    string
+	serverOn   bool
+	version    string
+	tipIndex   int
 
 	// components
 	textarea textarea.Model
 	viewport viewport.Model
-	spinner spinner.Model
-	help help.Model
-	keys keyMap
+	spinner  spinner.Model
+	help     help.Model
+	keys     keyMap
 
 	// chat
-	messages []ChatMsg
-	isStreaming bool
-	streamBuffer string
-	slashMode bool
-	commandList []string
-	filteredCmds []string
-	tabIndex int
+	messages      []ChatMsg
+	isStreaming   bool
+	streamBuffer  string
+	streamChan    <-chan provider.Chunk // active stream channel
+	slashMode     bool
+	commandList   []string
+	filteredCmds  []string
+	tabIndex      int
 	showCmdPalette bool
-	selectedIdx int
+	selectedIdx   int
 
-	// providers cycle
-	providers []string
-	models []string
+	// providers
+	activeProvider provider.Provider
+	providers      []string
+	providerKeys   []string
+	models         []string
+	loginProvider  string
+	loginProgress  chan string
+	loginDone      chan *auth.CaptureResult
+	paletteMode    string // "" | "commands" | "models"
 }
 
 func NewModel() Model {
@@ -70,33 +80,37 @@ func NewModel() Model {
 	h := help.New()
 
 	providers := []string{"DeepSeek Chat Free", "Qwen Chat Free", "Gemini Chat Free"}
+	providerKeys := []string{"deepseek", "dummy", "dummy"}
 	modelsList := []string{"DeepSeek V4 Flash Free", "Qwen3 Coder Plus", "Gemini 2.5 Pro"}
 
 	m := Model{
 		showLogo: true,
-		mode: "Chat",
+		mode:     "Chat",
 		provider: providers[0],
 		modelName: modelsList[0],
 		endpoint: "localhost:8000",
-		variant: "max",
+		variant:  "max",
 		serverOn: false,
-		version: "v0.1.0",
+		version:  "v0.1.0",
 		tipIndex: 0,
 		textarea: ta,
 		viewport: vp,
-		spinner: sp,
-		help: h,
-		keys: newKeyMap(),
-		messages: []ChatMsg{},
-		isStreaming: false,
-		slashMode: false,
-		commandList: []string{"/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
-		filteredCmds: []string{"/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
-		tabIndex: 0,
+		spinner:  sp,
+		help:     h,
+		keys:     newKeyMap(),
+		messages:      []ChatMsg{},
+		isStreaming:   false,
+		streamChan:    nil,
+		slashMode:     false,
+		commandList:   []string{"/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
+		filteredCmds:  []string{"/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
+		tabIndex:       0,
 		showCmdPalette: false,
-		selectedIdx: 0,
-		providers: providers,
-		models: modelsList,
+		selectedIdx:    0,
+		activeProvider: provider.MustGet(providerKeys[0]),
+		providers:      providers,
+		providerKeys:   providerKeys,
+		models:         modelsList,
 	}
 	return m
 }

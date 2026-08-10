@@ -27,7 +27,7 @@ internal/
     handlers.go                   ← GET /v1/models, POST /v1/chat/completions
     sse.go                        ← SSE streaming writer
   auth/                           ← [NEW] auth engine (browser cookie capture)
-    browser.go                    ← buka browser, tangkap cookies via CDP (chromedp/rod)
+    browser.go                    ← buka browser, tangkap cookies via CDP (playwright-go)
     session.go                    ← simpan/load/refresh session ke disk
 ```
 
@@ -60,7 +60,7 @@ internal/
 ## Phase 3: Auth Engine (Browser Cookie Capture)
 **Tujuan:** User login ke DeepSeek Web lewat browser, cookies otomatis tertangkap tanpa copy-paste.
 - [ ] Buat `internal/auth/browser.go`:
-  - Gunakan library **rod** (`github.com/go-rod/rod`) untuk Chrome DevTools Protocol
+  - Gunakan library **playwright-go** (`github.com/mxschmitt/playwright-go`) untuk Chrome DevTools Protocol
   - Fungsi `CaptureCookies(url string) ([]http.Cookie, error)`:
     1. Buka Chrome/Chromium (detect existing atau launch baru)
     2. Navigasi ke `https://chat.deepseek.com`
