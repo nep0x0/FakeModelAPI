@@ -188,7 +188,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if m.slashMode &&!m.showCmdPalette {
+		if m.slashMode && !m.showCmdPalette {
 			switch msg.String() {
 			case "up":
 				if m.selectedIdx > 0 {
@@ -224,7 +224,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "ctrl+p":
-			m.showCmdPalette =!m.showCmdPalette
+			m.showCmdPalette = !m.showCmdPalette
 			m.filteredCmds = m.commandList
 			m.selectedIdx = 0
 			return m, nil
@@ -258,6 +258,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(val, "/") {
 				cmd := strings.Fields(val)[0]
 				switch cmd {
+				case "/chat":
+					chatText := strings.TrimSpace(strings.TrimPrefix(val, cmd))
+					if chatText == "" {
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: "Gunakan /chat <pesan> untuk mengobrol dengan AI."})
+						m.showLogo = false
+						m.textarea.Reset()
+						m.slashMode = false
+						m.filteredCmds = []string{}
+						m.viewport.SetContent(m.renderChatContent())
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+					if m.server == nil || !m.server.Running() {
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: "✗ server belum start. Jalankan /start dulu, lalu /chat untuk mengobrol."})
+						m.showLogo = false
+						m.textarea.Reset()
+						m.slashMode = false
+						m.filteredCmds = []string{}
+						m.viewport.SetContent(m.renderChatContent())
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+					if !m.activeProvider.AuthStatus().LoggedIn {
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: "✗ belum login. Jalankan /login dulu, lalu /start dan /chat."})
+						m.showLogo = false
+						m.textarea.Reset()
+						m.slashMode = false
+						m.filteredCmds = []string{}
+						m.viewport.SetContent(m.renderChatContent())
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+					m.messages = append(m.messages, ChatMsg{Role: "user", Content: chatText})
+					m.showLogo = false
+					m.textarea.Reset()
+					m.slashMode = false
+					m.filteredCmds = []string{}
+					m.isStreaming = true
+					m.streamBuffer = ""
+					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: ""})
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, startStream(m.activeProvider, chatText)
 				case "/exit", "/quit", "q":
 					if m.server != nil {
 						_ = m.server.Stop()
@@ -270,7 +316,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.server = server.New(m.providerKeys[m.tabIndex], server.DefaultPort)
 						if err := m.server.Start(); err != nil {
 							m.server = nil
-							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ gagal start server: " + err.Error()})
+							msg := "✗ gagal start server: " + err.Error()
+							if strings.Contains(err.Error(), "address already in use") {
+								msg += "\nPort 8000 dipakai proses lain (mungkin instance fakeapi lain masih berjalan). Stop dulu proses itu."
+							}
+							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: msg})
 						} else {
 							m.serverOn = true
 							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server started at " + m.server.Addr() + " (" + m.provider + ")"})
@@ -284,6 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.viewport.GotoBottom()
 					return m, nil
 				case "/stop":
+					wasRunning := m.server != nil && m.server.Running()
 					if m.server != nil {
 						if err := m.server.Stop(); err != nil {
 							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ gagal stop server: " + err.Error()})
@@ -291,7 +342,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.server = nil
 					}
 					m.serverOn = false
-					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "○ server stopped"})
+					if wasRunning {
+						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "○ server stopped"})
+					} else {
+						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "○ server tidak berjalan"})
+					}
 					m.showLogo = false
 					m.textarea.Reset()
 					m.slashMode = false
@@ -372,17 +427,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-			m.messages = append(m.messages, ChatMsg{Role: "user", Content: val})
+			m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+				ChatMsg{Role: "assistant", Content: "Gunakan /chat <pesan> untuk mengobrol dengan AI, atau ketik / untuk daftar perintah."})
 			m.showLogo = false
 			m.textarea.Reset()
 			m.slashMode = false
 			m.filteredCmds = []string{}
-			m.isStreaming = true
-			m.streamBuffer = ""
-			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: ""})
 			m.viewport.SetContent(m.renderChatContent())
 			m.viewport.GotoBottom()
-			return m, startStream(m.activeProvider, val)
+			return m, nil
 		}
 	}
 
@@ -440,16 +493,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	} else {
-		if oldVal!= "" && newVal == "" {
+		if oldVal != "" && newVal == "" {
 			m.slashMode = false
 			m.filteredCmds = []string{}
 		}
-		if!strings.HasPrefix(newVal, "/") && m.slashMode && newVal == "" {
+		if !strings.HasPrefix(newVal, "/") && m.slashMode && newVal == "" {
 			m.slashMode = false
 			m.filteredCmds = []string{}
 		}
 		// jika tidak mulai dengan "/" pastikan tertutup
-		if!strings.HasPrefix(newVal, "/") {
+		if !strings.HasPrefix(newVal, "/") {
 			m.slashMode = false
 		}
 	}

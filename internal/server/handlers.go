@@ -101,7 +101,7 @@ func (s *Server) completeChat(w http.ResponseWriter, ctx context.Context, p prov
 	var text string
 	var err error
 	if ag != nil {
-		text, err = ag.run()
+		text, err = ag.run(nil)
 	} else {
 		text, err = p.Chat(ctx, msgs)
 	}
@@ -125,15 +125,7 @@ func (s *Server) completeChat(w http.ResponseWriter, ctx context.Context, p prov
 
 // streamChat melayani request streaming (SSE).
 func (s *Server) streamChat(w http.ResponseWriter, ctx context.Context, p provider.Provider, msgs []provider.Message, model string, ag *agent) {
-	var finalText string
-	if ag != nil {
-		text, err := ag.run()
-		if err != nil {
-			writeProviderError(w, err)
-			return
-		}
-		finalText = text
-	} else {
+	if ag == nil {
 		// Minta stream dulu sebelum menulis header SSE, supaya error masih bisa
 		// dikirim sebagai JSON biasa.
 		ch, err := p.ChatStream(ctx, msgs)
@@ -144,23 +136,51 @@ func (s *Server) streamChat(w http.ResponseWriter, ctx context.Context, p provid
 		s.streamProvider(w, ctx, model, ch)
 		return
 	}
-	s.streamText(w, model, finalText)
-}
 
-// streamText menulis teks final (hasil agent loop) sebagai SSE chunks.
-func (s *Server) streamText(w http.ResponseWriter, model, text string) {
-	flusher, ok := w.(http.Flusher)
+	// Path agent: tulis header SSE SEGERA sebelum loop berjalan, supaya client
+	// tidak menunggu terlalu lama dan koneksi tidak dianggap timeout. Selama
+	// loop, kirim komentar progress sebagai keep-alive.
+	flusher, ok := writeSSEHeaders(w)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming tidak didukung")
 		return
 	}
 
+	progress := func(step int, tool string) {
+		writeSSE(w, fmt.Sprintf(": agent step %d/%d tool=%s\n\n", step, maxAgentSteps, tool))
+		flusher.Flush()
+	}
+
+	text, err := ag.run(progress)
+	if err != nil {
+		// Stream sudah terkirim; error dikirim sebagai delta teks.
+		writeChunk(w, flusher, newID(), time.Now().Unix(), model,
+			map[string]any{"content": "\n[error] " + err.Error()}, nil)
+		writeChunk(w, flusher, newID(), time.Now().Unix(), model, map[string]any{}, "stop")
+		writeSSE(w, "data: [DONE]\n\n")
+		return
+	}
+	s.streamText(w, flusher, model, text)
+}
+
+// writeSSEHeaders menulis header streaming dan mengembalikan flusher.
+// Return ok=false jika writer tidak mendukung streaming.
+func writeSSEHeaders(w http.ResponseWriter) (http.Flusher, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
 	w.Header().Set("content-type", "text/event-stream")
 	w.Header().Set("cache-control", "no-cache")
 	w.Header().Set("connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+	return flusher, true
+}
 
+// streamText menulis teks final (hasil agent loop) sebagai SSE chunks.
+// Header SSE sudah harus ditulis oleh pemanggil.
+func (s *Server) streamText(w http.ResponseWriter, flusher http.Flusher, model, text string) {
 	id := newID()
 	created := time.Now().Unix()
 
@@ -183,17 +203,11 @@ func (s *Server) streamText(w http.ResponseWriter, model, text string) {
 
 // streamProvider meneruskan stream asli dari provider sebagai SSE OpenAI.
 func (s *Server) streamProvider(w http.ResponseWriter, ctx context.Context, model string, ch <-chan provider.Chunk) {
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := writeSSEHeaders(w)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming tidak didukung")
 		return
 	}
-
-	w.Header().Set("content-type", "text/event-stream")
-	w.Header().Set("cache-control", "no-cache")
-	w.Header().Set("connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 
 	id := newID()
 	created := time.Now().Unix()

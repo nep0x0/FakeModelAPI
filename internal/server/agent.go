@@ -63,8 +63,12 @@ func detectWorkingDir(msgs []provider.Message) string {
 	return "."
 }
 
+// agentProgress dipanggil setelah setiap eksekusi tool; dipakai server untuk
+// mengirim sinyal keep-alive ke client SSE.
+type agentProgress func(step int, tool string)
+
 // run mengeksekusi loop sampai model memberi jawaban teks final.
-func (a *agent) run() (string, error) {
+func (a *agent) run(progress agentProgress) (string, error) {
 	curInput := a.lastUserContent()
 
 	for a.step = 0; a.step < maxAgentSteps; a.step++ {
@@ -81,6 +85,9 @@ func (a *agent) run() (string, error) {
 		debugf("[agent] step %d: tool=%s args=%s", a.step+1, call.Name, truncateJSON(call.Args))
 		result := a.execute(call)
 		debugf("[agent] step %d: hasil %d byte", a.step+1, len(result))
+		if progress != nil {
+			progress(a.step+1, call.Name)
+		}
 		curInput = "[Hasil tool]\n" + result
 	}
 

@@ -296,4 +296,55 @@ func TestAgentLoopFeedsToolError(t *testing.T) {
 	}
 }
 
+func TestAgentLoopStreamsSse(t *testing.T) {
+	sp := &scriptedProvider{
+		responses: []string{
+			"```tool\n{\"name\":\"bash\",\"args\":{\"command\":\"echo SSE-Oke\"}}\n```",
+			"Hasil stream sudah didapat: SSE-Oke",
+		},
+		loggedIn: true,
+	}
+	provider.Register("test-agent-stream", sp)
+	srv := New("test-agent-stream", 8130)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer srv.Stop()
+
+	body := `{"model":"m","messages":[{"role":"user","content":"jalankan bash"}],"stream":true,
+		"tools":[{"type":"function","function":{"name":"bash","description":"Run bash","parameters":{}}}]}`
+
+	req, _ := http.NewRequest("POST", "http://localhost:8130/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("content-type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", ct)
+	}
+
+	var full strings.Builder
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		full.WriteString(line + "\n")
+	}
+	out := full.String()
+	if !strings.Contains(out, "SSE-Oke") {
+		t.Fatalf("stream tidak berisi jawaban final: %s", out)
+	}
+	if !strings.Contains(out, "data: [DONE]") {
+		t.Fatalf("stream tidak berakhir dengan [DONE]: %s", out)
+	}
+}
+
 var _ = context.Background
