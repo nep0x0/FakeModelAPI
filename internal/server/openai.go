@@ -56,10 +56,25 @@ func (c openAIContent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(c))
 }
 
-// openaiMessage adalah satu pesan dalam percakapan.
+// openaiMessage adalah satu pesan dalam percakapan. Mendukung pesan tool
+// (role "tool" dengan tool_call_id) dan pesan assistant berisi tool_calls.
 type openaiMessage struct {
-	Role    string        `json:"role"`
-	Content openAIContent `json:"content"`
+	Role       string           `json:"role"`
+	Content    openAIContent    `json:"content,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+}
+
+// openAIToolCall adalah satu tool call dalam pesan assistant (native OpenAI).
+type openAIToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function openAIToolFn `json:"function"`
+}
+
+type openAIToolFn struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"` // JSON string berisi objek argumen
 }
 
 // openAITool adalah definisi satu tool yang dikirim OpenCode.

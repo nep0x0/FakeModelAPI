@@ -52,14 +52,16 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 
-	// Hanya bind ke localhost: server mengeksekusi tool (bash, edit file),
-	// jadi tidak boleh bisa diakses dari jaringan.
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
+	// Bind ke semua interface (IPv4 + IPv6) supaya "localhost" yang resolve
+	// ke ::1 maupun 127.0.0.1 tetap bisa terhubung. Keamanan dijamin lewat
+	// requireLoopback: hanya klien loopback yang boleh mengakses, karena
+	// server ini bisa mengeksekusi tool (bash, edit file).
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
 	if err != nil {
 		return fmt.Errorf("tidak bisa listen port %d: %w", s.port, err)
 	}
 
-	s.httpSrv = &http.Server{Handler: mux}
+	s.httpSrv = &http.Server{Handler: requireLoopback(mux)}
 	s.listener = ln
 	s.running = true
 
@@ -106,4 +108,24 @@ func (s *Server) Addr() string {
 // currentProvider me-resolve provider aktif dari registry.
 func (s *Server) currentProvider() (provider.Provider, error) {
 	return provider.Get(s.providerName)
+}
+
+// requireLoopback menolak semua request dari remote non-loopback. Server ini
+// mengeksekusi tool (bash, edit file) atas nama user lokal, jadi hanya
+// localhost yang boleh memakainya.
+func requireLoopback(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"forbidden: hanya localhost yang diizinkan","type":"invalid_request_error","code":403}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -90,6 +90,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, tea.Batch(cmds...)
 
+	case testResultMsg:
+		if msg.Err != nil {
+			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ AI tidak terkoneksi: " + msg.Err.Error()})
+		} else {
+			reply := msg.Reply
+			r := []rune(reply)
+			if len(r) > 200 {
+				reply = string(r[:200]) + "..."
+			}
+			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: fmt.Sprintf("✓ AI terkoneksi (respon dalam %s): %s", msg.Elapsed, reply)})
+		}
+		m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "server: " + msg.ServerState})
+		m.viewport.SetContent(m.renderChatContent())
+		m.viewport.GotoBottom()
+		return m, nil
+
 	case authDoneMsg:
 		if msg.result.Error != nil {
 			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "login gagal: " + msg.result.Error.Error()})
@@ -258,52 +274,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(val, "/") {
 				cmd := strings.Fields(val)[0]
 				switch cmd {
-				case "/chat":
-					chatText := strings.TrimSpace(strings.TrimPrefix(val, cmd))
-					if chatText == "" {
-						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
-							ChatMsg{Role: "assistant", Content: "Gunakan /chat <pesan> untuk mengobrol dengan AI."})
-						m.showLogo = false
-						m.textarea.Reset()
-						m.slashMode = false
-						m.filteredCmds = []string{}
-						m.viewport.SetContent(m.renderChatContent())
-						m.viewport.GotoBottom()
-						return m, nil
-					}
-					if m.server == nil || !m.server.Running() {
-						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
-							ChatMsg{Role: "assistant", Content: "✗ server belum start. Jalankan /start dulu, lalu /chat untuk mengobrol."})
-						m.showLogo = false
-						m.textarea.Reset()
-						m.slashMode = false
-						m.filteredCmds = []string{}
-						m.viewport.SetContent(m.renderChatContent())
-						m.viewport.GotoBottom()
-						return m, nil
-					}
-					if !m.activeProvider.AuthStatus().LoggedIn {
-						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
-							ChatMsg{Role: "assistant", Content: "✗ belum login. Jalankan /login dulu, lalu /start dan /chat."})
-						m.showLogo = false
-						m.textarea.Reset()
-						m.slashMode = false
-						m.filteredCmds = []string{}
-						m.viewport.SetContent(m.renderChatContent())
-						m.viewport.GotoBottom()
-						return m, nil
-					}
-					m.messages = append(m.messages, ChatMsg{Role: "user", Content: chatText})
+				case "/test":
+					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val})
 					m.showLogo = false
 					m.textarea.Reset()
 					m.slashMode = false
 					m.filteredCmds = []string{}
-					m.isStreaming = true
-					m.streamBuffer = ""
-					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: ""})
 					m.viewport.SetContent(m.renderChatContent())
 					m.viewport.GotoBottom()
-					return m, startStream(m.activeProvider, chatText)
+
+					if !m.activeProvider.AuthStatus().LoggedIn {
+						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ tidak terkoneksi: belum login. Jalankan /login dulu."})
+						m.viewport.SetContent(m.renderChatContent())
+						m.viewport.GotoBottom()
+						return m, nil
+					}
+
+					serverState := "off"
+					if m.server != nil && m.server.Running() {
+						serverState = "on (" + m.server.Addr() + ")"
+					}
+					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "⏳ testing koneksi ke AI..."})
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, testConnection(m.activeProvider, serverState)
 				case "/exit", "/quit", "q":
 					if m.server != nil {
 						_ = m.server.Stop()
@@ -323,7 +317,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: msg})
 						} else {
 							m.serverOn = true
-							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server started at " + m.server.Addr() + " (" + m.provider + ")"})
+							ai := m.activeProvider.AuthStatus()
+							login := "not logged in"
+							if ai.LoggedIn {
+								login = "logged in ✓"
+							}
+							info := fmt.Sprintf("● server started\nendpoint: http://%s/v1\nprovider: %s\nmodel: %s\nlogin: %s\n\nKonfigurasi OpenCode: baseURL = http://%s/v1, lalu ketik /status untuk detail atau /test untuk cek koneksi AI.",
+								m.server.Addr(), m.provider, m.modelName, login, m.server.Addr())
+							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: info})
 						}
 					}
 					m.showLogo = false
@@ -428,7 +429,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
-				ChatMsg{Role: "assistant", Content: "Gunakan /chat <pesan> untuk mengobrol dengan AI, atau ketik / untuk daftar perintah."})
+				ChatMsg{Role: "assistant", Content: "TUI ini untuk kontrol server. Chat ke AI dilakukan lewat OpenCode (server di localhost:8000). Gunakan /test untuk cek koneksi AI, atau ketik / untuk daftar perintah."})
 			m.showLogo = false
 			m.textarea.Reset()
 			m.slashMode = false
@@ -599,6 +600,31 @@ func (m *Model) nextLoginMsg() tea.Cmd {
 			return authDoneMsg{result: res, provider: m.loginProvider}
 		}
 	}
+}
+
+// testConnection mengirim ping singkat ke provider dan mengembalikan hasilnya
+// ke TUI sebagai testResultMsg.
+func testConnection(p provider.Provider, serverState string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		start := time.Now()
+		reply, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: "ping"}})
+		elapsed := time.Since(start).Round(10 * time.Millisecond)
+
+		if err != nil {
+			return testResultMsg{ServerState: serverState, Err: err, Elapsed: elapsed}
+		}
+		return testResultMsg{ServerState: serverState, Reply: reply, Elapsed: elapsed}
+	}
+}
+
+// testResultMsg membawa hasil /test ke TUI.
+type testResultMsg struct {
+	ServerState string
+	Reply       string
+	Err         error
+	Elapsed     time.Duration
 }
 
 // startStream initiates a streaming request to the provider and returns the command

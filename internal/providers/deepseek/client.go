@@ -28,15 +28,15 @@ var XClientVersion = "2.0.2"
 
 // ChatRequest is the payload sent to /chat/completion.
 type ChatRequest struct {
-	ChatSessionID    string   `json:"chat_session_id"`
-	ParentMessageID  *int64   `json:"parent_message_id"`
-	Prompt           string   `json:"prompt"`
-	RefFileIDs       []string `json:"ref_file_ids"`
-	ThinkingEnabled  bool     `json:"thinking_enabled"`
-	SearchEnabled    bool     `json:"search_enabled"`
-	ModelType        string   `json:"model_type"`
-	Preempt          bool     `json:"preempt"`
-	Action           any      `json:"action"`
+	ChatSessionID   string   `json:"chat_session_id"`
+	ParentMessageID *int64   `json:"parent_message_id"`
+	Prompt          string   `json:"prompt"`
+	RefFileIDs      []string `json:"ref_file_ids"`
+	ThinkingEnabled bool     `json:"thinking_enabled"`
+	SearchEnabled   bool     `json:"search_enabled"`
+	ModelType       string   `json:"model_type"`
+	Preempt         bool     `json:"preempt"`
+	Action          any      `json:"action"`
 }
 
 // ErrNotAuthenticated is returned when the DeepSeek session is invalid/expired.

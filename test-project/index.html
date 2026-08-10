@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Halaman Sederhana</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="navbar">
+    <div class="container nav-inner">
+      <span class="logo">Halo<span class="logo-accent">Web</span></span>
+      <nav>
+        <a href="#hero">Beranda</a>
+        <a href="#interaktif">Interaktif</a>
+        <a href="#tentang">Tentang</a>
+      </nav>
+    </div>
+  </header>
+
+  <section id="hero" class="hero">
+    <div class="container">
+      <h1>Website Sederhana</h1>
+      <p>Dibuat hanya dengan HTML, CSS, dan JavaScript — tanpa framework apapun.</p>
+      <button class="btn" onclick="greet()">Sapa Saya</button>
+      <p id="greet-output" class="greet-output"></p>
+    </div>
+  </section>
+
+  <section id="interaktif" class="section">
+    <div class="container cards">
+      <div class="card">
+        <h2>Jam Digital</h2>
+        <p class="clock" id="clock">--:--:--</p>
+        <p class="muted">Berjalan real-time</p>
+      </div>
+      <div class="card">
+        <h2>Penghitung</h2>
+        <p class="count" id="count">0</p>
+        <div class="btn-group">
+          <button class="btn small" onclick="tambah(-1)">-1</button>
+          <button class="btn small" onclick="tambah(1)">+1</button>
+          <button class="btn small reset" onclick="tambah(0)">Reset</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Catatan</h2>
+        <div class="todo-input">
+          <input type="text" id="todo-input" placeholder="Tulis catatan..." onkeydown="if(event.key==='Enter')tambahTodo()">
+          <button class="btn small" onclick="tambahTodo()">Tambah</button>
+        </div>
+        <ul id="todo-list" class="todo-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="tentang" class="section">
+    <div class="container">
+      <h2>Tentang</h2>
+      <p class="muted">Contoh halaman statis sederhana. Semua interaksi di atas murni JavaScript vanilla, gaya visualnya murni CSS.</p>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>&copy; <span id="year"></span> HaloWeb — dibuat dengan HTML, CSS &amp; JS</p>
+  </footer>
+
+  <script src="js/script.js"></script>
+</body>
+</html>

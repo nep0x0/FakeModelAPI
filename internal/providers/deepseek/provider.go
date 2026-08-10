@@ -11,10 +11,16 @@ import (
 
 // Provider implements provider.Provider for the DeepSeek web API.
 type Provider struct {
-	mu        sync.Mutex
-	client    *Client
-	token     string
-	modelID   string
+	mu      sync.Mutex
+	client  *Client
+	token   string
+	modelID string
+
+	// streamMu menserialkan seluruh ChatStream. DeepSeek web menyimpan konteks
+	// percakapan server-side (chat_session_id + parent_message_id), jadi dua
+	// request bersamaan (mis. title + main dari OpenCode) akan saling
+	// menimpa rantai pesan dan menghasilkan respons kosong/rusak.
+	streamMu sync.Mutex
 }
 
 // New creates a DeepSeek provider. It is not logged in until /login captures
@@ -47,8 +53,13 @@ func (p *Provider) Chat(ctx context.Context, messages []provider.Message) (strin
 }
 
 func (p *Provider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.Chunk, error) {
+	// Seluruh sesi dipakai satu-satu: buat session, kirim pesan, dan baca
+	// stream selesai sebelum request berikutnya berjalan.
+	p.streamMu.Lock()
+
 	client, err := p.getClient()
 	if err != nil {
+		p.streamMu.Unlock()
 		return nil, err
 	}
 
@@ -58,17 +69,20 @@ func (p *Provider) ChatStream(ctx context.Context, messages []provider.Message) 
 
 	req, err := BuildChatRequest(messages, modelID, client.parentMessageID())
 	if err != nil {
+		p.streamMu.Unlock()
 		return nil, err
 	}
 
 	events, err := client.SendMessage(ctx, req)
 	if err != nil {
+		p.streamMu.Unlock()
 		return nil, err
 	}
 
 	ch := make(chan provider.Chunk, 16)
 	go func() {
 		defer close(ch)
+		defer p.streamMu.Unlock()
 		for {
 			select {
 			case ev, ok := <-events:

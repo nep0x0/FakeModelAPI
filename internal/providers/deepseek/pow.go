@@ -149,11 +149,12 @@ func keccakF1600_23(a *[25]uint64) {
 // load across requests.
 //
 // Message layout (single 136-byte block, guaranteed since prefix is short):
-//   [0..base_len)        prefix bytes
-//   [base_len..+nlen)    nonce decimal digits
-//   [base_len+nlen]      0x06 (SHA3 domain byte)
-//   zeros
-//   [135]                0x80 (end-of-padding, always at the last byte)
+//
+//	[0..base_len)        prefix bytes
+//	[base_len..+nlen)    nonce decimal digits
+//	[base_len+nlen]      0x06 (SHA3 domain byte)
+//	zeros
+//	[135]                0x80 (end-of-padding, always at the last byte)
 func findNonce(prefix string, target []byte, difficulty int) (int64, error) {
 	if difficulty <= 0 {
 		difficulty = 144000

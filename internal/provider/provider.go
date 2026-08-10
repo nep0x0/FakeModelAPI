@@ -10,10 +10,19 @@ import (
 // provider konkret.
 var ErrNotAuthenticated = errors.New("not authenticated")
 
+// MessageToolCall mewakili satu panggilan tool yang dibuat model (role "assistant").
+type MessageToolCall struct {
+	ID        string // id tool call, dirujuk pesan role "tool"
+	Name      string
+	Arguments any // map[string]any yang sudah di-decode
+}
+
 // Message represents a chat message.
 type Message struct {
-	Role    string // "user", "assistant", "system"
-	Content string
+	Role       string // "system", "user", "assistant", "tool"
+	Content    string
+	ToolCallID string            // role "tool": id dari tool call yang dijawab
+	ToolCalls  []MessageToolCall // role "assistant": panggilan tool yang dibuat
 }
 
 // Chunk represents a piece of streaming response.

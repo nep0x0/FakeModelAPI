@@ -80,31 +80,55 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	msgs := make([]provider.Message, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		msgs = append(msgs, provider.Message{Role: m.Role, Content: string(m.Content)})
+		pm := provider.Message{Role: m.Role, Content: string(m.Content), ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			var args any
+			if len(tc.Function.Arguments) > 0 {
+				if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+					args = string(tc.Function.Arguments)
+				}
+			}
+			pm.ToolCalls = append(pm.ToolCalls, provider.MessageToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: args,
+			})
+		}
+		msgs = append(msgs, pm)
 	}
 	ctx := r.Context()
 
-	var ag *agent
+	// Request dengan tools: system prompt asli OpenCode dipertahankan dan
+	// instruksi protokol ditambahkan; tool call diemulasi sebagai tool_calls
+	// native agar OpenCode yang mengeksekusi (dengan sistem permission-nya).
 	if len(req.Tools) > 0 {
-		ag = newAgent(ctx, p, req.Tools, msgs)
+		sys := buildToolSystemPrompt(joinSystemPrompts(msgs), req.Tools)
+		clean := make([]provider.Message, 0, len(msgs))
+		for _, m := range msgs {
+			if m.Role != "system" {
+				clean = append(clean, m)
+			}
+		}
+		msgs = append([]provider.Message{{Role: "system", Content: sys}}, clean...)
+
+		if req.Stream {
+			streamChatWithTools(w, ctx, p, msgs, req.Model, req.Tools)
+		} else {
+			completeChatWithTools(w, ctx, p, msgs, req.Model, req.Tools)
+		}
+		return
 	}
 
 	if req.Stream {
-		s.streamChat(w, ctx, p, msgs, req.Model, ag)
+		s.streamChat(w, ctx, p, msgs, req.Model)
 		return
 	}
-	s.completeChat(w, ctx, p, msgs, req.Model, ag)
+	s.completeChat(w, ctx, p, msgs, req.Model)
 }
 
 // completeChat melayani request non-streaming.
-func (s *Server) completeChat(w http.ResponseWriter, ctx context.Context, p provider.Provider, msgs []provider.Message, model string, ag *agent) {
-	var text string
-	var err error
-	if ag != nil {
-		text, err = ag.run(nil)
-	} else {
-		text, err = p.Chat(ctx, msgs)
-	}
+func (s *Server) completeChat(w http.ResponseWriter, ctx context.Context, p provider.Provider, msgs []provider.Message, model string) {
+	text, err := p.Chat(ctx, msgs)
 	if err != nil {
 		writeProviderError(w, err)
 		return
@@ -124,43 +148,15 @@ func (s *Server) completeChat(w http.ResponseWriter, ctx context.Context, p prov
 }
 
 // streamChat melayani request streaming (SSE).
-func (s *Server) streamChat(w http.ResponseWriter, ctx context.Context, p provider.Provider, msgs []provider.Message, model string, ag *agent) {
-	if ag == nil {
-		// Minta stream dulu sebelum menulis header SSE, supaya error masih bisa
-		// dikirim sebagai JSON biasa.
-		ch, err := p.ChatStream(ctx, msgs)
-		if err != nil {
-			writeProviderError(w, err)
-			return
-		}
-		s.streamProvider(w, ctx, model, ch)
-		return
-	}
-
-	// Path agent: tulis header SSE SEGERA sebelum loop berjalan, supaya client
-	// tidak menunggu terlalu lama dan koneksi tidak dianggap timeout. Selama
-	// loop, kirim komentar progress sebagai keep-alive.
-	flusher, ok := writeSSEHeaders(w)
-	if !ok {
-		writeError(w, http.StatusInternalServerError, "streaming tidak didukung")
-		return
-	}
-
-	progress := func(step int, tool string) {
-		writeSSE(w, fmt.Sprintf(": agent step %d/%d tool=%s\n\n", step, maxAgentSteps, tool))
-		flusher.Flush()
-	}
-
-	text, err := ag.run(progress)
+func (s *Server) streamChat(w http.ResponseWriter, ctx context.Context, p provider.Provider, msgs []provider.Message, model string) {
+	// Minta stream dulu sebelum menulis header SSE, supaya error masih bisa
+	// dikirim sebagai JSON biasa.
+	ch, err := p.ChatStream(ctx, msgs)
 	if err != nil {
-		// Stream sudah terkirim; error dikirim sebagai delta teks.
-		writeChunk(w, flusher, newID(), time.Now().Unix(), model,
-			map[string]any{"content": "\n[error] " + err.Error()}, nil)
-		writeChunk(w, flusher, newID(), time.Now().Unix(), model, map[string]any{}, "stop")
-		writeSSE(w, "data: [DONE]\n\n")
+		writeProviderError(w, err)
 		return
 	}
-	s.streamText(w, flusher, model, text)
+	s.streamProvider(w, ctx, model, ch)
 }
 
 // writeSSEHeaders menulis header streaming dan mengembalikan flusher.
@@ -176,29 +172,6 @@ func writeSSEHeaders(w http.ResponseWriter) (http.Flusher, bool) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 	return flusher, true
-}
-
-// streamText menulis teks final (hasil agent loop) sebagai SSE chunks.
-// Header SSE sudah harus ditulis oleh pemanggil.
-func (s *Server) streamText(w http.ResponseWriter, flusher http.Flusher, model, text string) {
-	id := newID()
-	created := time.Now().Unix()
-
-	runes := []rune(text)
-	const chunkLen = 100
-	for i := 0; i < len(runes); i += chunkLen {
-		end := i + chunkLen
-		if end > len(runes) {
-			end = len(runes)
-		}
-		delta := map[string]any{"content": string(runes[i:end])}
-		if i == 0 {
-			delta["role"] = "assistant"
-		}
-		writeChunk(w, flusher, id, created, model, delta, nil)
-	}
-	writeChunk(w, flusher, id, created, model, map[string]any{}, "stop")
-	writeSSE(w, "data: [DONE]\n\n")
 }
 
 // streamProvider meneruskan stream asli dari provider sebagai SSE OpenAI.

@@ -38,9 +38,9 @@ func TestParseSSELine(t *testing.T) {
 			delta: "B",
 		},
 		{
-			name:  "thinking fragment skipped",
-			line:  `data: {"v":{"response":{"fragments":[{"id":1,"type":"THINKING","content":"reasoning...","stage_id":1}]}}}`,
-			kind:  EventSkip,
+			name: "thinking fragment skipped",
+			line: `data: {"v":{"response":{"fragments":[{"id":1,"type":"THINKING","content":"reasoning...","stage_id":1}]}}}`,
+			kind: EventSkip,
 		},
 		{
 			name: "finished",
