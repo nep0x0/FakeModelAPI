@@ -111,14 +111,14 @@ internal/
   - Pastikan streaming tampil di chatview dengan baik
   - Handle error state (session expired → auto prompt re-login)
 
-## Phase 5: Local OpenAI-Compatible Server (Port 8000)
+## Phase 5: Local OpenAI-Compatible Server (Port 8000) ✅ SELESAI
 **Tujuan:** HTTP server yang menerima request OpenAI-format dan meneruskannya ke provider aktif.
-- [ ] Buat `internal/server/server.go`:
+- [x] Buat `internal/server/server.go`:
   - Struct `Server` dengan field `http.Server`, `providerName`, `port`
   - Method `Start() error` — mulai HTTP server di goroutine
   - Method `Stop() error` — graceful shutdown
-  - Variabel global `ActiveServer *Server` (diakses TUI untuk status)
-- [ ] Buat `internal/server/handlers.go`:
+  - Provider di-resolve dari registry per request (tab switch tidak memengaruhi server)
+- [x] Buat `internal/server/handlers.go`:
   - `GET /v1/models`:
     - Panggil `registry.Get(provider).Models()`
     - Return JSON: `{"object": "list", "data": [{"id": "...", "object": "model", ...}]}`
@@ -133,15 +133,13 @@ internal/
     - Jika `stream == false`:
       - Panggil `provider.Chat()`
       - Return JSON `openai.ChatCompletionResponse`
-  - Handle error: provider not authenticated → 401, rate limited → 429, timeout → 504
-- [ ] **Integrasi `/start` & `/stop`:**
+  - Handle error: provider not authenticated → 401, timeout → 504
+- [x] **Integrasi `/start` & `/stop`:**
   - `/start`: buat `Server`, panggil `Start()`, update `m.serverOn = true`
   - `/stop`: panggil `Stop()`, update `m.serverOn = false`
-  - Status bar real-time dari `ActiveServer != nil && ActiveServer.Running()`
-- [ ] **Test manual:**
-  - Jalankan `/start`
-  - `curl http://localhost:8000/v1/models`
-  - `curl -X POST http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"deepseek-v3","messages":[{"role":"user","content":"halo"}],"stream":false}'`
+  - Status bar real-time dari server state
+- [x] **Test manual:**
+  - `/v1/models` ✓, chat completions non-stream ✓, streaming ✓, multi-turn ✓, 401 tanpa session ✓
 
 ## Phase 6: Error Handling, Retry, & Session Refresh
 - [ ] **Global error handler di server handlers:**

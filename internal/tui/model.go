@@ -5,6 +5,7 @@ import (
 
 	"fakemodelapi/internal/auth"
 	"fakemodelapi/internal/provider"
+	"fakemodelapi/internal/server"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -60,6 +61,9 @@ type Model struct {
 	loginProgress  chan string
 	loginDone      chan *auth.CaptureResult
 	paletteMode    string // "" | "commands" | "models"
+
+	// server
+	server *server.Server
 }
 
 func NewModel() Model {

@@ -1,6 +1,14 @@
 package provider
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotAuthenticated adalah sentinel untuk error session/login tidak valid.
+// Server & TUI memetakannya ke status 401 tanpa bergantung pada package
+// provider konkret.
+var ErrNotAuthenticated = errors.New("not authenticated")
 
 // Message represents a chat message.
 type Message struct {

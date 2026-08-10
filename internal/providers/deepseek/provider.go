@@ -56,7 +56,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []provider.Message) 
 	modelID := p.modelID
 	p.mu.Unlock()
 
-	req, err := BuildChatRequest(messages, modelID, client.parentMsgID)
+	req, err := BuildChatRequest(messages, modelID, client.parentMessageID())
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (p *Provider) ChatStream(ctx context.Context, messages []provider.Message) 
 				}
 				switch ev.Kind {
 				case EventIDs:
-					client.parentMsgID = &ev.ParentMsgID
+					client.setParentMessageID(ev.ParentMsgID)
 				case EventText:
 					ch <- provider.Chunk{Delta: ev.Content}
 				case EventFinish:

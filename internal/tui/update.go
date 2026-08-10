@@ -8,6 +8,7 @@ import (
 
 	"fakemodelapi/internal/auth"
 	"fakemodelapi/internal/provider"
+	"fakemodelapi/internal/server"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -218,6 +219,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c":
+			if m.server != nil {
+				_ = m.server.Stop()
+			}
 			return m, tea.Quit
 		case "ctrl+p":
 			m.showCmdPalette =!m.showCmdPalette
@@ -233,6 +237,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "esc":
 			if m.textarea.Value() == "" && len(m.messages) == 0 {
+				if m.server != nil {
+					_ = m.server.Stop()
+				}
 				return m, tea.Quit
 			}
 			if m.slashMode {
@@ -252,10 +259,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd := strings.Fields(val)[0]
 				switch cmd {
 				case "/exit", "/quit", "q":
+					if m.server != nil {
+						_ = m.server.Stop()
+					}
 					return m, tea.Quit
 				case "/start":
-					m.serverOn = true
-					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server started at localhost:8000 (dummy)"})
+					if m.server != nil && m.server.Running() {
+						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server sudah berjalan di " + m.server.Addr()})
+					} else {
+						m.server = server.New(m.providerKeys[m.tabIndex], server.DefaultPort)
+						if err := m.server.Start(); err != nil {
+							m.server = nil
+							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ gagal start server: " + err.Error()})
+						} else {
+							m.serverOn = true
+							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server started at " + m.server.Addr() + " (" + m.provider + ")"})
+						}
+					}
 					m.showLogo = false
 					m.textarea.Reset()
 					m.slashMode = false
@@ -264,6 +284,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.viewport.GotoBottom()
 					return m, nil
 				case "/stop":
+					if m.server != nil {
+						if err := m.server.Stop(); err != nil {
+							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "✗ gagal stop server: " + err.Error()})
+						}
+						m.server = nil
+					}
 					m.serverOn = false
 					m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "○ server stopped"})
 					m.showLogo = false
@@ -280,8 +306,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						login = "logged in (" + ai.Username + ")"
 					}
 					server := "off"
-					if m.serverOn {
-						server = "on ✓"
+					if m.server != nil && m.server.Running() {
+						server = "on ✓ (" + m.server.Addr() + ")"
 					}
 					status := fmt.Sprintf("server: %s\nlogin: %s\nprovider: %s\nendpoint: localhost:8000\nmodel: %s",
 						server, login, m.provider, m.modelName)

@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"fakemodelapi/internal/provider"
 )
 
 const (
@@ -37,17 +40,22 @@ type ChatRequest struct {
 }
 
 // ErrNotAuthenticated is returned when the DeepSeek session is invalid/expired.
+// It wraps provider.ErrNotAuthenticated so callers can errors.Is it.
 type ErrNotAuthenticated struct{ Msg string }
 
 func (e *ErrNotAuthenticated) Error() string {
 	return "session DeepSeek tidak valid: " + e.Msg
 }
 
+func (e *ErrNotAuthenticated) Unwrap() error { return provider.ErrNotAuthenticated }
+
 // Client talks to the DeepSeek web API using a captured bearer token + cookies.
 type Client struct {
-	token         string
-	cookies       []string // raw "name=value" pairs from the captured session
-	http          *http.Client
+	token   string
+	cookies []string // raw "name=value" pairs from the captured session
+	http    *http.Client
+
+	mu            sync.Mutex
 	chatSessionID string
 	parentMsgID   *int64
 }
@@ -70,8 +78,26 @@ func NewClient(token string, cookies []http.Cookie) *Client {
 
 // ResetConversation drops the cached chat session so the next message starts fresh.
 func (c *Client) ResetConversation() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.chatSessionID = ""
 	c.parentMsgID = nil
+}
+
+func (c *Client) setParentMessageID(id int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.parentMsgID = &id
+}
+
+func (c *Client) parentMessageID() *int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.parentMsgID == nil {
+		return nil
+	}
+	id := *c.parentMsgID
+	return &id
 }
 
 func (c *Client) headers(pow string) http.Header {
@@ -149,9 +175,13 @@ func (c *Client) postJSON(ctx context.Context, path string, body any) (map[strin
 
 // ensureSession lazily creates the chat session for multi-turn continuity.
 func (c *Client) ensureSession(ctx context.Context) error {
+	c.mu.Lock()
 	if c.chatSessionID != "" {
+		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
+
 	data, err := c.postJSON(ctx, "/chat_session/create", map[string]any{"character_id": nil})
 	if err != nil {
 		return fmt.Errorf("gagal buat chat session: %w", err)
@@ -168,7 +198,12 @@ func (c *Client) ensureSession(ctx context.Context) error {
 	if !ok || id == "" {
 		return fmt.Errorf("chat_session tanpa id")
 	}
-	c.chatSessionID = id
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.chatSessionID == "" {
+		c.chatSessionID = id
+	}
 	return nil
 }
 
@@ -207,8 +242,10 @@ func (c *Client) SendMessage(ctx context.Context, req ChatRequest) (<-chan Event
 	if err := c.ensureSession(ctx); err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
 	req.ChatSessionID = c.chatSessionID
-	req.ParentMessageID = c.parentMsgID
+	c.mu.Unlock()
+	req.ParentMessageID = c.parentMessageID()
 
 	challenge, err := c.getChallenge(ctx)
 	if err != nil {
