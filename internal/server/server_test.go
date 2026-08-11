@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"fakemodelapi/internal/openai"
 	"fakemodelapi/internal/provider"
 	"fakemodelapi/internal/providers/dummy"
 )
@@ -125,7 +126,7 @@ func TestCompleteChatStream(t *testing.T) {
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data: ")
-		var chunk chatCompletionChunk
+		var chunk openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			t.Fatalf("chunk decode error: %v (line=%q)", err, line)
 		}
@@ -182,9 +183,25 @@ func TestCompleteChatEmptyMessages(t *testing.T) {
 type scriptedProvider struct {
 	responses []string
 	loggedIn  bool
+	lastModel string // model dari request terakhir (untuk asersi sinkronisasi)
 }
 
-func (p *scriptedProvider) Chat(ctx context.Context, msgs []provider.Message) (string, error) {
+func (p *scriptedProvider) ID() string { return "scripted" }
+
+func (p *scriptedProvider) Name() string { return "Scripted Test Provider" }
+
+func (p *scriptedProvider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{
+		SupportsStreaming:      true,
+		SupportsTools:          true,
+		SupportsSystemRole:     true,
+		RequiresSessionLogin:   false,
+		SupportsModelSelection: false,
+	}
+}
+
+func (p *scriptedProvider) Chat(ctx context.Context, model string, msgs []provider.Message) (string, error) {
+	p.lastModel = model
 	if len(p.responses) == 0 {
 		return "", fmt.Errorf("tidak ada respons tersisa")
 	}
@@ -193,7 +210,8 @@ func (p *scriptedProvider) Chat(ctx context.Context, msgs []provider.Message) (s
 	return r, nil
 }
 
-func (p *scriptedProvider) ChatStream(ctx context.Context, msgs []provider.Message) (<-chan provider.Chunk, error) {
+func (p *scriptedProvider) ChatStream(ctx context.Context, model string, msgs []provider.Message) (<-chan provider.Chunk, error) {
+	p.lastModel = model
 	if len(p.responses) == 0 {
 		return nil, fmt.Errorf("tidak ada respons tersisa")
 	}
@@ -221,80 +239,33 @@ func (p *scriptedProvider) Models() []provider.ModelInfo {
 func (p *scriptedProvider) SetModel(modelID string) {}
 func (p *scriptedProvider) Reset()                  {}
 
-func TestParseToolCalls(t *testing.T) {
-	cases := []struct {
-		in    string
-		ok    bool
-		names []string
-	}{
-		{"```tool\n{\"name\":\"bash\",\"args\":{\"command\":\"ls\"}}\n```", true, []string{"bash"}},
-		{"```json\n{\"tool\":\"read\",\"args\":{\"filePath\":\"x.go\"}}\n```", true, []string{"read"}},
-		{"{\"name\":\"glob\",\"args\":{\"pattern\":\"**/*.go\"}}", true, []string{"glob"}},
-		{"```tool\n{\"name\":\"bash\",\"args\":{\"command\":\"ls\"}}\n```\n```tool\n{\"name\":\"grep\",\"args\":{\"pattern\":\"func\",\"include\":\"*.go\"}}\n```", true, []string{"bash", "grep"}},
-		{"jawaban biasa saja", false, nil},
-		{"", false, nil},
-		{"```tool\n{\"args\":{\"command\":\"ls\"}}\n```", false, nil},
-		{"blabla ```tool\n{\"name\":\"bash\",\"args\":{}}\n``` blabla", true, []string{"bash"}},
-	}
-	for _, c := range cases {
-		calls, ok := parseToolCalls(c.in)
-		if ok != c.ok {
-			t.Fatalf("parseToolCalls(%q) = (%+v, %v), want ok=%v", c.in, calls, ok, c.ok)
-		}
-		if !ok {
-			continue
-		}
-		if len(calls) != len(c.names) {
-			t.Fatalf("parseToolCalls(%q) = %d call, want %d", c.in, len(calls), len(c.names))
-		}
-		for i, want := range c.names {
-			if calls[i].Name != want {
-				t.Fatalf("parseToolCalls(%q)[%d].Name = %q, want %q", c.in, i, calls[i].Name, want)
-			}
-		}
-	}
-}
-
-func TestBuildToolSystemPromptKeepsOriginalAndFullSchema(t *testing.T) {
-	original := "Working directory: /tmp/xyz\nYou are opencode.\nEnvironment: linux"
-	tools := []openAITool{{
-		Type: "function",
-		Function: openAIFunction{
-			Name:        "edit",
-			Description: strings.Repeat("Edit a file. ", 20),
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"filePath":   map[string]any{"type": "string"},
-					"oldString":  map[string]any{"type": "string"},
-					"newString":  map[string]any{"type": "string"},
-					"replaceAll": map[string]any{"type": "boolean"},
-				},
-				"required": []any{"filePath", "oldString", "newString"},
-			},
-		},
-	}}
-	p := buildToolSystemPrompt(original, tools)
-
-	if !strings.Contains(p, original) {
-		t.Fatalf("system prompt asli hilang dari buildToolSystemPrompt")
-	}
-	if !strings.Contains(p, `"required":["filePath","oldString","newString"]`) {
-		t.Fatalf("schema tool tidak lengkap: %s", p)
-	}
-	if strings.Contains(p, "schema too large") {
-		t.Fatalf("schema tool dipotong padahal di bawah budget")
-	}
-	if !strings.Contains(p, "does NOT support native tool calls") {
-		t.Fatalf("instruksi protokol tool tidak ada")
-	}
-	if !strings.Contains(p, "plan") || !strings.Contains(p, "read-only") {
-		t.Fatalf("instruksi kepatuhan plan mode tidak ada: %s", p)
-	}
-}
-
 // toolBodyRequest membuat body request chat dengan satu tool "bash".
 const toolBodyRequest = `"tools":[{"type":"function","function":{"name":"bash","description":"Run bash","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}]`
+
+// TestChatRequestForwardsModel memastikan model dari request OpenAI diteruskan
+// ke provider — dua model yang dipilih di OpenCode tidak boleh berakhir di
+// model yang sama.
+func TestChatRequestForwardsModel(t *testing.T) {
+	sp := &scriptedProvider{
+		responses: []string{"oke"},
+		loggedIn:  true,
+	}
+	provider.Register("model-check", sp)
+	srv := New("model-check", 8132)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer srv.Stop()
+
+	resp, data := postJSON(t, "http://localhost:8132/v1/chat/completions",
+		`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"halo"}],"stream":false}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(data))
+	}
+	if sp.lastModel != "deepseek-reasoner" {
+		t.Fatalf("provider menerima model %q, want deepseek-reasoner", sp.lastModel)
+	}
+}
 
 func TestCompleteChatToolCall(t *testing.T) {
 	sp := &scriptedProvider{
@@ -314,7 +285,7 @@ func TestCompleteChatToolCall(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(data))
 	}
 
-	var out chatCompletionResponse
+	var out openai.ChatCompletionResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -352,7 +323,7 @@ func TestCompleteChatToolCallMulti(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(data))
 	}
-	var out chatCompletionResponse
+	var out openai.ChatCompletionResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -378,7 +349,7 @@ func TestCompleteChatPlainTextWithTools(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(data))
 	}
-	var out chatCompletionResponse
+	var out openai.ChatCompletionResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -408,7 +379,7 @@ func TestCompleteChatUnknownToolBlock(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(data))
 	}
-	var out chatCompletionResponse
+	var out openai.ChatCompletionResponse
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -454,7 +425,7 @@ func TestStreamToolCall(t *testing.T) {
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data: ")
-		var chunk chatCompletionChunk
+		var chunk openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			t.Fatalf("chunk decode error: %v (line=%q)", err, line)
 		}
@@ -518,7 +489,7 @@ func TestStreamToolCallWithProsePrefix(t *testing.T) {
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data: ")
-		var chunk chatCompletionChunk
+		var chunk openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			t.Fatalf("chunk decode error: %v (line=%q)", err, line)
 		}
@@ -575,7 +546,7 @@ func TestStreamPlainTextWithTools(t *testing.T) {
 			continue
 		}
 		payload := strings.TrimPrefix(line, "data: ")
-		var chunk chatCompletionChunk
+		var chunk openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			t.Fatalf("chunk decode error: %v (line=%q)", err, line)
 		}

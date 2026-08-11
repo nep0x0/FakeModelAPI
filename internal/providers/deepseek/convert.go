@@ -1,16 +1,16 @@
 package deepseek
 
 import (
-	"encoding/json"
-	"fmt"
 	"strings"
 
+	"fakemodelapi/internal/conversation"
 	"fakemodelapi/internal/provider"
 )
 
 // maxPromptLen membatasi panjang prompt yang diratakan agar konteks
-// DeepSeek web tidak meledak (riwayat terpotong dari depan).
-const maxPromptLen = 60000
+// DeepSeek web tidak meledak (riwayat terpotong dari depan; system prompt
+// dipertahankan utuh oleh conversation.Flatten).
+const maxPromptLen = 100000
 
 // BuildChatRequest converts provider messages into the DeepSeek web payload.
 // The web API is stateless per message: only a single prompt is sent, and
@@ -23,64 +23,35 @@ func BuildChatRequest(msgs []provider.Message, modelID string, parentID *int64) 
 		return ChatRequest{}, nil
 	}
 
-	var b strings.Builder
-	for _, m := range msgs {
-		if strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 {
-			continue
-		}
-		switch m.Role {
-		case "system":
-			b.WriteString("[System]\n" + m.Content + "\n\n")
-		case "user":
-			b.WriteString("[User]\n" + m.Content + "\n\n")
-		case "assistant":
-			if len(m.ToolCalls) > 0 {
-				for _, tc := range m.ToolCalls {
-					argsJSON, err := json.Marshal(tc.Arguments)
-					if err != nil {
-						argsJSON = []byte("{}")
-					}
-					b.WriteString(fmt.Sprintf("[Assistant] memanggil tool %s dengan argumen: %s\n", tc.Name, argsJSON))
-				}
-				if strings.TrimSpace(m.Content) != "" {
-					b.WriteString("[Assistant]\n" + m.Content + "\n\n")
-				}
-				continue
-			}
-			b.WriteString("[Assistant]\n" + m.Content + "\n\n")
-		case "tool":
-			id := m.ToolCallID
-			if id == "" {
-				id = "?"
-			}
-			b.WriteString("[Hasil tool " + id + "]\n" + m.Content + "\n\n")
-		default:
-			b.WriteString("[" + m.Role + "]\n" + m.Content + "\n\n")
-		}
-	}
-
-	prompt := strings.TrimSpace(b.String())
+	prompt := conversation.Flatten(msgs, maxPromptLen)
 	if prompt == "" {
 		return ChatRequest{}, nil
-	}
-	if len(prompt) > maxPromptLen {
-		prompt = "[Bagian awal percakapan terpotong]\n\n" + prompt[len(prompt)-maxPromptLen:]
 	}
 
 	return ChatRequest{
 		ParentMessageID: parentID,
 		Prompt:          prompt,
 		RefFileIDs:      []string{},
-		ThinkingEnabled: isReasoner(modelID),
+		ThinkingEnabled: true, // DeepThink aktif untuk kedua model (pilihan user)
 		SearchEnabled:   false,
-		ModelType:       "default",
+		ModelType:       modelTypeFor(modelID),
 		Preempt:         false,
 		Action:          nil,
 	}, nil
 }
 
+// modelTypeFor memetakan ID model publik ke nilai model_type wire DeepSeek
+// web: "default" = DeepSeek-chat-Instant-Think-Search (model cepat),
+// "expert" = DeepSeek-chat-Expert-Think (model kuat/lambat).
+func modelTypeFor(modelID string) string {
+	if isReasoner(modelID) {
+		return "expert"
+	}
+	return "default"
+}
+
 func isReasoner(modelID string) bool {
-	return strings.Contains(modelID, "reasoner") || strings.Contains(modelID, "r1") || strings.Contains(modelID, "thinking")
+	return strings.Contains(modelID, "reasoner") || strings.Contains(modelID, "expert") || strings.Contains(modelID, "r1")
 }
 
 // EventToChunk converts a parsed DeepSeek SSE event to a provider.Chunk.

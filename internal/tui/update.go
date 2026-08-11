@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"fakemodelapi/internal/auth"
+	"fakemodelapi/internal/config"
+	"fakemodelapi/internal/doctor"
 	"fakemodelapi/internal/provider"
 	"fakemodelapi/internal/server"
 
@@ -102,6 +104,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: fmt.Sprintf("✓ AI terkoneksi (respon dalam %s): %s", msg.Elapsed, reply)})
 		}
 		m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "server: " + msg.ServerState})
+		m.viewport.SetContent(m.renderChatContent())
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case doctorDoneMsg:
+		m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: msg.result.Render()})
 		m.viewport.SetContent(m.renderChatContent())
 		m.viewport.GotoBottom()
 		return m, nil
@@ -307,12 +315,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.server != nil && m.server.Running() {
 						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server sudah berjalan di " + m.server.Addr()})
 					} else {
-						m.server = server.New(m.providerKeys[m.tabIndex], server.DefaultPort)
+						m.server = server.New(m.providerKeys[m.tabIndex], m.cfg.Port,
+							server.WithToken(m.cfg.Token), server.WithTimeout(m.cfg.Timeout),
+							server.WithActivityLog(m.activity))
 						if err := m.server.Start(); err != nil {
 							m.server = nil
 							msg := "✗ gagal start server: " + err.Error()
 							if strings.Contains(err.Error(), "address already in use") {
-								msg += "\nPort 8000 dipakai proses lain (mungkin instance fakeapi lain masih berjalan). Stop dulu proses itu."
+								msg += "\nPort " + fmt.Sprint(m.cfg.Port) + " dipakai proses lain (mungkin instance fakeapi lain masih berjalan). Stop dulu proses itu."
 							}
 							m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: msg})
 						} else {
@@ -365,9 +375,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.server != nil && m.server.Running() {
 						server = "on ✓ (" + m.server.Addr() + ")"
 					}
-					status := fmt.Sprintf("server: %s\nlogin: %s\nprovider: %s\nendpoint: localhost:8000\nmodel: %s",
-						server, login, m.provider, m.modelName)
+					session := ""
+					if ai.LoggedIn {
+						st, err := auth.GetVault().Status(m.activeProvider.ID())
+						if err != nil {
+							session = "\nsession: ?"
+						} else if st.Expired {
+							session = "\nsession: kedaluwarsa ⚠ (jalankan /login ulang)"
+						} else {
+							session = "\nsession: valid ✓"
+							if !st.ExpiresAt.IsZero() {
+								session += " (expires " + st.ExpiresAt.Local().Format("02 Jan 15:04") + ")"
+							}
+						}
+					}
+					status := fmt.Sprintf("server: %s\nlogin: %s%s\nprovider: %s\nendpoint: localhost:%d\nmodel: %s",
+						server, login, session, m.provider, m.cfg.Port, m.modelName)
 					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val}, ChatMsg{Role: "assistant", Content: status})
+					m.showLogo = false
+					m.textarea.Reset()
+					m.slashMode = false
+					m.filteredCmds = []string{}
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, nil
+				case "/doctor":
+					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val})
+					m.showLogo = false
+					m.textarea.Reset()
+					m.slashMode = false
+					m.filteredCmds = []string{}
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, runDoctor(m)
+				case "/config":
+					tok := m.cfg.Token
+					if tok != "" {
+						tok = tokenPreview(tok)
+					}
+					out := fmt.Sprintf("port: %d\nprovider: %s\ntimeout: %s\ntoken: %s\n\nPrioritas: file ~/.fakeapi/config.json → env FAKEAPI_* → flag CLI. Jalankan `fakeapi config init` di terminal untuk membuat file config.",
+						m.cfg.Port, m.cfg.Provider, m.cfg.Timeout, tok)
+					m.messages = append(m.messages, ChatMsg{Role: "user", Content: val}, ChatMsg{Role: "assistant", Content: out})
+					m.showLogo = false
+					m.textarea.Reset()
+					m.slashMode = false
+					m.filteredCmds = []string{}
+					m.viewport.SetContent(m.renderChatContent())
+					m.viewport.GotoBottom()
+					return m, nil
+				case "/logs":
+					events := m.activity.Events()
+					if len(events) == 0 {
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: "belum ada aktivitas tercatat."})
+					} else {
+						var sb strings.Builder
+						sb.WriteString("log aktivitas (terbaru akhir):\n")
+						start := 0
+						if len(events) > 30 {
+							start = len(events) - 30
+							sb.WriteString(fmt.Sprintf("(menampilkan %d dari %d event)\n", len(events)-start, len(events)))
+						}
+						for _, e := range events[start:] {
+							line := fmt.Sprintf("%s [%s] %s", e.Time.Local().Format("15:04:05"), e.Kind, e.Summary)
+							if e.Err != "" {
+								line += " — err: " + e.Err
+							}
+							sb.WriteString(line + "\n")
+						}
+						m.messages = append(m.messages, ChatMsg{Role: "user", Content: val},
+							ChatMsg{Role: "assistant", Content: sb.String()})
+					}
 					m.showLogo = false
 					m.textarea.Reset()
 					m.slashMode = false
@@ -602,6 +680,18 @@ func (m *Model) nextLoginMsg() tea.Cmd {
 	}
 }
 
+// tokenPreview menyembunyikan token di tampilan, hanya sisa 2 karakter
+// pertama dan terakhir yang ditampilkan.
+func tokenPreview(tok string) string {
+	if tok == "" {
+		return "(kosong)"
+	}
+	if len(tok) <= 4 {
+		return "***"
+	}
+	return tok[:2] + "***" + tok[len(tok)-2:]
+}
+
 // testConnection mengirim ping singkat ke provider dan mengembalikan hasilnya
 // ke TUI sebagai testResultMsg.
 func testConnection(p provider.Provider, serverState string) tea.Cmd {
@@ -609,7 +699,7 @@ func testConnection(p provider.Provider, serverState string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		start := time.Now()
-		reply, err := p.Chat(ctx, []provider.Message{{Role: "user", Content: "ping"}})
+		reply, err := p.Chat(ctx, "", []provider.Message{{Role: "user", Content: "ping"}})
 		elapsed := time.Since(start).Round(10 * time.Millisecond)
 
 		if err != nil {
@@ -627,13 +717,28 @@ type testResultMsg struct {
 	Elapsed     time.Duration
 }
 
+// runDoctor menjalankan pemeriksaan doctor di goroutine dan mengirim
+// hasilnya ke TUI sebagai doctorDoneMsg.
+func runDoctor(m Model) tea.Cmd {
+	return func() tea.Msg {
+		cfg := config.Config{Provider: m.activeProvider.ID(), Port: m.cfg.Port, Timeout: m.cfg.Timeout, Token: m.cfg.Token}
+		res := doctor.All(context.Background(), cfg, m.activeProvider)
+		return doctorDoneMsg{result: res}
+	}
+}
+
+// doctorDoneMsg membawa hasil /doctor ke TUI.
+type doctorDoneMsg struct {
+	result doctor.Result
+}
+
 // startStream initiates a streaming request to the provider and returns the command
 // that starts reading from the channel.
 func startStream(p provider.Provider, content string) tea.Cmd {
 	ctx := context.Background()
 	msgs := []provider.Message{{Role: "user", Content: content}}
 
-	ch, err := p.ChatStream(ctx, msgs)
+	ch, err := p.ChatStream(ctx, "", msgs)
 	if err != nil {
 		return func() tea.Msg {
 			return chatResponseChunkMsg{chunk: "Error: " + err.Error()}

@@ -63,7 +63,7 @@ func main() {
 	ctx := context.Background()
 	msgs := []provider.Message{{Role: "user", Content: "Halo, balas satu kalimat saja."}}
 
-	ch, err := prov.ChatStream(ctx, msgs)
+	ch, err := prov.ChatStream(ctx, "deepseek-reasoner", msgs)
 	if err != nil {
 		fmt.Println("CHATSTREAM GAGAL:", err)
 		os.Exit(1)

@@ -4,8 +4,10 @@ import (
 	"time"
 
 	"fakemodelapi/internal/auth"
+	"fakemodelapi/internal/config"
 	"fakemodelapi/internal/provider"
 	"fakemodelapi/internal/server"
+	"fakemodelapi/internal/telemetry"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -63,10 +65,12 @@ type Model struct {
 	paletteMode    string // "" | "commands" | "models"
 
 	// server
-	server *server.Server
+	server   *server.Server
+	cfg      config.Config
+	activity *telemetry.ActivityLog
 }
 
-func NewModel() Model {
+func NewModel(cfg config.Config) Model {
 	ta := textarea.New()
 	ta.Placeholder = `Type "/" for commands`
 	ta.Focus()
@@ -106,8 +110,8 @@ func NewModel() Model {
 		isStreaming:    false,
 		streamChan:     nil,
 		slashMode:      false,
-		commandList:    []string{"/test", "/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
-		filteredCmds:   []string{"/test", "/login", "/logout", "/start", "/stop", "/status", "/model", "/clear", "/exit"},
+		commandList:    []string{"/test", "/login", "/logout", "/start", "/stop", "/status", "/doctor", "/config", "/logs", "/model", "/clear", "/exit"},
+		filteredCmds:   []string{"/test", "/login", "/logout", "/start", "/stop", "/status", "/doctor", "/config", "/logs", "/model", "/clear", "/exit"},
 		tabIndex:       0,
 		showCmdPalette: false,
 		selectedIdx:    0,
@@ -115,6 +119,8 @@ func NewModel() Model {
 		providers:      providers,
 		providerKeys:   providerKeys,
 		models:         modelsList,
+		cfg:            cfg,
+		activity:       telemetry.NewActivityLog(100),
 	}
 	return m
 }

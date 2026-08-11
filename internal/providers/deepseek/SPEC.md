@@ -79,6 +79,34 @@ cookie: name=value; ...
 `parent_message_id` = `response_message_id` dari pesan sebelumnya (multi-turn
 dipegang server via rantai parent id). `null` untuk pesan pertama.
 
+### Nilai `model_type`
+
+`model_type` memilih model yang menjawab (bukan toggle fitur):
+
+| Nilai | Model | Keterangan |
+|---|---|---|
+| `default` | DeepSeek-chat-Instant-Think-Search | model cepat bawaan web |
+| `expert` | DeepSeek-chat-Expert-Think | model kuat, lebih lambat |
+
+DeepThink (`thinking_enabled`) dan web search (`search_enabled`) adalah toggle
+terpisah yang bisa dikombinasikan dengan model mana pun.
+
+Catatan penting: **model thread terkunci saat thread dibuat** di server web.
+Ganti `model_type` di tengah thread (parent_message_id sudah terisi) tidak
+berefek — proxy me-reset percakapan (session + parent id baru) setiap model
+berubah. Setiap model juga memakai session terpisah (satu Client per model).
+
+### Aturan thread per request
+
+- **Request dengan riwayat lengkap** (multi-message, biasanya diawali system
+  prompt — opencode & klien API lain): selalu memulai **thread web baru**.
+  Prompt sudah me-flatten seluruh konteks, jadi rantai parent lama hanya
+  menambahkan konteks basi dari sesi sebelumnya (model menjawab topik lama
+  atau meng-echo prompt). Model per request dipilih via `model_type`, jadi
+  ganti model antar request langsung berefek.
+- **Request 1 pesan user saja** (chat multi-turn TUI yang mengirim delta per
+  turn): memakai rantai `parent_message_id` untuk kontinuitas.
+
 ## SSE stream format (bukan OpenAI format!)
 
 | Event | Arti |

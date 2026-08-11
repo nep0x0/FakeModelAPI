@@ -1,11 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -17,92 +13,68 @@ type Session struct {
 	SavedAt  time.Time     `json:"saved_at"`
 }
 
-func sessionDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("tidak bisa temukan home dir: %w", err)
+// defaultVault adalah vault bawaan: file JSON per provider di
+// ~/.fakeapi/sessions/. Core memanggilnya lewat fungsi bantuan di bawah;
+// vault alternatif bisa dipasang lewat SetVault (mis. untuk tes).
+var defaultVault Vault = NewFileVault()
+
+// SetVault mengganti vault bawaan (untuk tes / mode khusus).
+func SetVault(v Vault) {
+	if v != nil {
+		defaultVault = v
 	}
-	dir := filepath.Join(home, ".fakeapi", "sessions")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("tidak bisa buat direktori sessions: %w", err)
-	}
-	return dir, nil
 }
 
-func sessionPath(provider string) (string, error) {
-	dir, err := sessionDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, provider+".json"), nil
+// GetVault mengembalikan vault aktif.
+func GetVault() Vault {
+	return defaultVault
 }
 
-// SaveSession menyimpan session ke disk.
+// SaveSession menyimpan session ke vault aktif.
 func SaveSession(provider string, cookies []http.Cookie) error {
-	return SaveSessionWithToken(provider, "", cookies)
+	return defaultVault.Save(provider, Session{Provider: provider, Cookies: cookies})
 }
 
-// SaveSessionWithToken menyimpan session (cookies + bearer token) ke disk.
+// SaveSessionWithToken menyimpan session (cookies + bearer token) ke vault.
 func SaveSessionWithToken(provider, token string, cookies []http.Cookie) error {
-	path, err := sessionPath(provider)
-	if err != nil {
-		return err
-	}
-	s := Session{
-		Provider: provider,
-		Token:    token,
-		Cookies:  cookies,
-		SavedAt:  time.Now(),
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("gagal marshal session: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("gagal tulis session: %w", err)
-	}
-	return nil
+	return defaultVault.Save(provider, Session{Provider: provider, Token: token, Cookies: cookies})
 }
 
-// LoadSession memuat session dari disk.
+// LoadSession memuat session dari vault aktif.
 func LoadSession(provider string) (*Session, error) {
-	path, err := sessionPath(provider)
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("belum login untuk %s, gunakan /login dulu", provider)
-		}
-		return nil, fmt.Errorf("gagal baca session: %w", err)
-	}
-	var s Session
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("gagal unmarshal session: %w", err)
-	}
-	return &s, nil
+	return defaultVault.Load(provider)
 }
 
-// ClearSession menghapus session dari disk.
+// ClearSession menghapus session dari vault aktif.
 func ClearSession(provider string) error {
-	path, err := sessionPath(provider)
-	if err != nil {
-		return err
+	return defaultVault.Delete(provider)
+}
+
+// SessionStatusOf mengambil status session dari vault aktif.
+// Mengembalikan status kosong (bukan error) jika belum ada session.
+func SessionStatusOf(provider string) (SessionStatus, error) {
+	st, err := defaultVault.Status(provider)
+	if err != nil && !IsNoSessionError(err) {
+		return SessionStatus{}, err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("gagal hapus session: %w", err)
-	}
-	return nil
+	return st, nil
+}
+
+// hasRealExpiry membedakan expiry nyata dari sentinel "session cookie":
+// banyak klien menyimpan cookie tanpa Expires sebagai 1970-01-01 (epoch).
+// Nilai sebelum tahun 2000 dianggap tidak punya expiry nyata.
+func hasRealExpiry(t time.Time) bool {
+	return t.Year() >= 2000
 }
 
 // IsExpired mengecek apakah session sudah kedaluwarsa.
 func (s *Session) IsExpired() bool {
 	for _, c := range s.Cookies {
-		if !c.Expires.IsZero() && time.Now().After(c.Expires) {
+		if hasRealExpiry(c.Expires) && time.Now().After(c.Expires) {
 			continue
 		}
-		// Jika ada cookie yang belum expired, session masih valid.
+		// Jika ada cookie yang belum expired (atau session cookie tanpa
+		// expiry), session masih valid.
 		return false
 	}
 	return true

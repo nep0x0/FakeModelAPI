@@ -44,13 +44,43 @@ type ModelInfo struct {
 	DisplayName string
 }
 
+// Capabilities mendeklarasikan kemampuan provider. Gateway & UI memakainya
+// untuk menyesuaikan perilaku: membangun prompt tool, menampilkan status,
+// dan menyiapkan fallback.
+type Capabilities struct {
+	// SupportsStreaming menandakan provider punya jalur ChatStream.
+	SupportsStreaming bool
+	// SupportsTools menandakan provider bisa mengikuti protokol tool call
+	// yang diemulasi gateway (blok ```tool dalam prompt).
+	SupportsTools bool
+	// SupportsSystemRole menandakan pesan role "system" didukung.
+	SupportsSystemRole bool
+	// RequiresSessionLogin menandakan perlu session login web sebelum chat.
+	RequiresSessionLogin bool
+	// SupportsModelSelection menandakan model bisa dipilih pengguna.
+	SupportsModelSelection bool
+	// MaxConcurrent membatasi request chat bersamaan; 0 = tanpa batas.
+	MaxConcurrent int
+}
+
 // Provider is the interface that all AI providers must implement.
 type Provider interface {
-	// Chat sends messages and returns the complete response.
-	Chat(ctx context.Context, messages []Message) (string, error)
+	// ID mengembalikan nama registry provider, mis. "deepseek".
+	ID() string
+
+	// Name mengembalikan nama tampilan provider.
+	Name() string
+
+	// Capabilities mengembalikan kemampuan provider.
+	Capabilities() Capabilities
+
+	// Chat sends messages and returns the complete response. model boleh
+	// kosong untuk memakai model default yang dipilih SetModel.
+	Chat(ctx context.Context, model string, messages []Message) (string, error)
 
 	// ChatStream sends messages and returns a channel of streaming chunks.
-	ChatStream(ctx context.Context, messages []Message) (<-chan Chunk, error)
+	// model boleh kosong untuk memakai model default yang dipilih SetModel.
+	ChatStream(ctx context.Context, model string, messages []Message) (<-chan Chunk, error)
 
 	// AuthStatus returns current authentication info.
 	AuthStatus() AuthInfo

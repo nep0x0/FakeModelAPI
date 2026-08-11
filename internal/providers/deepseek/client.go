@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"fakemodelapi/internal/errs"
 	"fakemodelapi/internal/provider"
 )
 
@@ -53,6 +54,7 @@ func (e *ErrNotAuthenticated) Unwrap() error { return provider.ErrNotAuthenticat
 type Client struct {
 	token   string
 	cookies []string // raw "name=value" pairs from the captured session
+	base    string   // API base URL (default apiBase; diganti untuk tes/mock)
 	http    *http.Client
 
 	mu            sync.Mutex
@@ -62,6 +64,12 @@ type Client struct {
 
 // NewClient builds a Client from a captured token and cookies.
 func NewClient(token string, cookies []http.Cookie) *Client {
+	return NewClientWithBase(token, cookies, apiBase)
+}
+
+// NewClientWithBase builds a Client yang menunjuk ke base URL lain
+// (dipakai untuk tes dengan mock server).
+func NewClientWithBase(token string, cookies []http.Cookie, base string) *Client {
 	pairs := make([]string, 0, len(cookies))
 	for _, c := range cookies {
 		if c.Name == "" {
@@ -72,6 +80,7 @@ func NewClient(token string, cookies []http.Cookie) *Client {
 	return &Client{
 		token:   token,
 		cookies: pairs,
+		base:    base,
 		http:    &http.Client{},
 	}
 }
@@ -132,7 +141,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body any) (map[strin
 	var resp *http.Response
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+path, bytes.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
@@ -147,8 +156,21 @@ func (c *Client) postJSON(ctx context.Context, path string, body any) (map[strin
 		if resp.StatusCode == http.StatusUnauthorized {
 			return nil, &ErrNotAuthenticated{Msg: "401 unauthorized"}
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("HTTP %d dari DeepSeek", resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = &errs.Error{
+				Kind:   errs.KindRateLimited,
+				Msg:    "rate limited oleh DeepSeek (HTTP 429)",
+				Action: "Tunggu beberapa saat lalu coba lagi.",
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode >= 500 {
+			lastErr = &errs.Error{
+				Kind:   errs.KindProviderUnavailable,
+				Msg:    fmt.Sprintf("HTTP %d dari DeepSeek", resp.StatusCode),
+				Action: "Cek koneksi internet dan status layanan DeepSeek.",
+			}
 			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 			continue
 		}
@@ -261,7 +283,7 @@ func (c *Client) SendMessage(ctx context.Context, req ChatRequest) (<-chan Event
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiBase+"/chat/completion", bytes.NewReader(raw))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/chat/completion", bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +298,21 @@ func (c *Client) SendMessage(ctx context.Context, req ChatRequest) (<-chan Event
 		httpResp.Body.Close()
 		return nil, &ErrNotAuthenticated{Msg: "401 unauthorized"}
 	}
+	if httpResp.StatusCode == http.StatusTooManyRequests {
+		httpResp.Body.Close()
+		return nil, &errs.Error{
+			Kind:   errs.KindRateLimited,
+			Msg:    "rate limited oleh DeepSeek (HTTP 429)",
+			Action: "Tunggu beberapa saat lalu coba lagi.",
+		}
+	}
 	if httpResp.StatusCode != http.StatusOK {
 		bodyText, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close()
-		return nil, fmt.Errorf("HTTP %d dari DeepSeek: %s", httpResp.StatusCode, truncate(string(bodyText), 200))
+		return nil, &errs.Error{
+			Kind: errs.KindProviderUnavailable,
+			Msg:  fmt.Sprintf("HTTP %d dari DeepSeek: %s", httpResp.StatusCode, truncate(string(bodyText), 200)),
+		}
 	}
 
 	events := make(chan Event, 16)
@@ -287,10 +320,11 @@ func (c *Client) SendMessage(ctx context.Context, req ChatRequest) (<-chan Event
 		defer close(events)
 		defer httpResp.Body.Close()
 		reader := bufio.NewReader(httpResp.Body)
+		parser := NewStreamParser()
 		for {
 			line, err := reader.ReadString('\n')
 			if line != "" {
-				if ev, ok := ParseSSELine(line); ok && ev.Kind != EventSkip {
+				if ev, ok := parser.Parse(line); ok && ev.Kind != EventSkip {
 					select {
 					case events <- ev:
 					case <-ctx.Done():

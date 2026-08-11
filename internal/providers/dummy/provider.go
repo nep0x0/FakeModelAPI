@@ -24,7 +24,21 @@ func New() *Provider {
 
 var _ provider.Provider = (*Provider)(nil)
 
-func (p *Provider) Chat(ctx context.Context, messages []provider.Message) (string, error) {
+func (p *Provider) ID() string { return "dummy" }
+
+func (p *Provider) Name() string { return "Dummy Provider" }
+
+func (p *Provider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{
+		SupportsStreaming:       true,
+		SupportsTools:           true,
+		SupportsSystemRole:      true,
+		RequiresSessionLogin:    false,
+		SupportsModelSelection:  false,
+	}
+}
+
+func (p *Provider) Chat(ctx context.Context, model string, messages []provider.Message) (string, error) {
 	if len(messages) == 0 {
 		return "", fmt.Errorf("no messages")
 	}
@@ -33,7 +47,7 @@ func (p *Provider) Chat(ctx context.Context, messages []provider.Message) (strin
 		last.Content, map[bool]string{true: "on", false: "off"}[p.serverOn]), nil
 }
 
-func (p *Provider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.Chunk, error) {
+func (p *Provider) ChatStream(ctx context.Context, model string, messages []provider.Message) (<-chan provider.Chunk, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages")
 	}

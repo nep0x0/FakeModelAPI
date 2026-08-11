@@ -1,6 +1,9 @@
 package deepseek
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSSELine(t *testing.T) {
 	cases := []struct {
@@ -81,5 +84,49 @@ func TestParseSSELine(t *testing.T) {
 				t.Fatalf("ParentMsgID = %d, want 16", ev.ParentMsgID)
 			}
 		})
+	}
+}
+
+// TestStreamParserSkipsThinking verifies that with thinking enabled, the THINK
+// fragment text (appends targeting fragment -1 while the last fragment is
+// THINK) is NOT emitted, while the RESPONSE fragment content and its
+// subsequent appends ARE.
+func TestStreamParserSkipsThinking(t *testing.T) {
+	lines := []string{
+		`data: {"request_message_id":1,"response_message_id":2}`,
+		`data: {"v":{"response":{"fragments":[{"id":2,"type":"THINK","content":"K"}]}}}`,
+		`data: {"p":"response/fragments/-1/content","o":"APPEND","v":"ita perlu"}`,
+		`data: {"v":" berpikir"}`,
+		`data: {"p":"response/fragments","o":"APPEND","v":[{"id":3,"type":"RESPONSE","content":"Python"}]}`,
+		`data: {"p":"response/fragments/-1/content","v":","}`,
+		`data: {"v":" JavaScript"}`,
+		`data: {"p":"response/status","v":"FINISHED"}`,
+		"event: done",
+	}
+
+	p := NewStreamParser()
+	var got string
+	finished := false
+	for _, line := range lines {
+		ev, ok := p.Parse(line)
+		if !ok {
+			continue
+		}
+		switch ev.Kind {
+		case EventText:
+			got += ev.Content
+		case EventFinish:
+			finished = true
+		}
+	}
+
+	if !strings.Contains(got, "Python") {
+		t.Fatalf("jawaban harus memuat fragment RESPONSE, got %q", got)
+	}
+	if strings.Contains(got, "ita perlu") || strings.Contains(got, "berpikir") {
+		t.Fatalf("teks thinking bocor ke jawaban: %q", got)
+	}
+	if !finished {
+		t.Fatal("harus ada EventFinish")
 	}
 }
