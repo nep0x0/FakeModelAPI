@@ -4,6 +4,7 @@ package telemetry
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -99,9 +100,16 @@ type Logger struct {
 	l *slog.Logger
 }
 
-// NewLogger membuat logger baru.
+// NewLogger membuat logger yang menulis ke stdout.
 func NewLogger() *Logger {
-	return &Logger{l: slog.New(slog.NewTextHandler(os.Stdout, nil))}
+	return NewLoggerTo(os.Stdout)
+}
+
+// NewLoggerTo membuat logger yang menulis ke writer tertentu. Dipakai TUI
+// untuk membuang log request (io.Discard) agar layar bubbletea tidak rusak;
+// aktivitas tetap terekam di ActivityLog (lihat /logs).
+func NewLoggerTo(w io.Writer) *Logger {
+	return &Logger{l: slog.New(slog.NewTextHandler(w, nil))}
 }
 
 // Request mencatat satu request: id, status, latency, provider, model.

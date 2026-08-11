@@ -233,6 +233,17 @@ func (m Model) renderSlashSuggest() string {
 	return components.RenderSlashSuggest(m.width, m.filteredCmds, m.selectedIdx)
 }
 
+// bottomContentHeight mengukur tinggi konten bawah (input box + hint bar +
+// tip bar + gap) pada lebar saat ini. Dipakai WindowSizeMsg untuk menghitung
+// tinggi viewport agar total frame pas dengan tinggi terminal (tanpa overflow
+// yang membuat layar bergeser).
+func (m Model) bottomContentHeight() int {
+	inputBox := m.renderInputBox()
+	hintBar := components.RenderHintBar(m.width, m.width-20)
+	tipBar := components.RenderTipBarComponent(m.width, m.tipIndex)
+	return lipgloss.Height(inputBox+"\n\n"+hintBar+"\n\n"+tipBar)
+}
+
 func (m Model) renderPaletteOverlay() string {
 	paletteW := 50
 	if m.width-20 < paletteW {

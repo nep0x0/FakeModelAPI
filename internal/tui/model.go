@@ -87,13 +87,13 @@ func NewModel(cfg config.Config) Model {
 
 	h := help.New()
 
-	providers := []string{"DeepSeek Chat Free", "Qwen Chat Free", "Gemini Chat Free"}
+	providers := []string{"DeepSeek Chat", "Qwen Chat Free", "Gemini Chat Free"}
 	providerKeys := []string{"deepseek", "dummy", "dummy"}
-	modelsList := []string{"DeepSeek V4 Flash Free", "Qwen3 Coder Plus", "Gemini 2.5 Pro"}
+	modelsList := []string{"DeepSeek Chat", "Qwen3 Coder Plus", "Gemini 2.5 Pro"}
 
 	m := Model{
 		showLogo:       true,
-		mode:           "Chat",
+		mode:           "Provider",
 		provider:       providers[0],
 		modelName:      modelsList[0],
 		endpoint:       "localhost:8000",

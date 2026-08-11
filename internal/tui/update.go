@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"fakemodelapi/internal/doctor"
 	"fakemodelapi/internal/provider"
 	"fakemodelapi/internal/server"
+	"fakemodelapi/internal/telemetry"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -34,10 +36,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.textarea.SetWidth(inputW - 4)
 		m.viewport.Width = inputW
-		// viewport height = topAvail (height - bottom), bukan fixed 14 biar logo gak geser
-		// bottom kira2 6 baris: input(2)+hint(1)+gap(2)+tip(1) = ~6
-		bottomReserve := 8
-		vh := m.height - 1 - bottomReserve
+		// viewport height = sisa layar setelah konten bawah + status bar,
+		// dihitung dari tinggi konten bawah yang sebenarnya supaya total
+		// frame pas (tidak overflow yang menggeser layar).
+		bottomH := m.bottomContentHeight()
+		vh := m.height - 1 - bottomH - 1
 		if vh < 3 {
 			vh = 3
 		}
@@ -315,9 +318,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.server != nil && m.server.Running() {
 						m.messages = append(m.messages, ChatMsg{Role: "assistant", Content: "● server sudah berjalan di " + m.server.Addr()})
 					} else {
-						m.server = server.New(m.providerKeys[m.tabIndex], m.cfg.Port,
-							server.WithToken(m.cfg.Token), server.WithTimeout(m.cfg.Timeout),
-							server.WithActivityLog(m.activity))
+					m.server = server.New(m.providerKeys[m.tabIndex], m.cfg.Port,
+						server.WithToken(m.cfg.Token), server.WithTimeout(m.cfg.Timeout),
+						server.WithActivityLog(m.activity),
+						// Log request jangan sampai ke stdout: TUI memakai
+						// alt-screen, baris log akan merusak layar. Aktivitas
+						// tetap tercatat di ActivityLog (lihat /logs).
+						server.WithLogger(telemetry.NewLoggerTo(io.Discard)))
 						if err := m.server.Start(); err != nil {
 							m.server = nil
 							msg := "✗ gagal start server: " + err.Error()

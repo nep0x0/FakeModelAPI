@@ -33,7 +33,7 @@ var _ provider.Provider = (*Provider)(nil)
 
 func (p *Provider) ID() string { return "deepseek" }
 
-func (p *Provider) Name() string { return "DeepSeek Chat Free" }
+func (p *Provider) Name() string { return "DeepSeek Chat" }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
