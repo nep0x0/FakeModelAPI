@@ -1,17 +1,47 @@
 # FakeModelAPI
 
-Proxy lokal yang mengubah **Web AI gratis** (DeepSeek) menjadi **API kompatibel OpenAI** untuk [OpenCode](https://opencode.ai) — tanpa API key, tanpa kartu kredit.
+Bridge lokal yang menyediakan endpoint API **kompatibel OpenAI** di `localhost:8000`, dengan layanan web AI (DeepSeek) sebagai backend — untuk digunakan bersama [OpenCode](https://opencode.ai).
 
 ```
-OpenCode ──HTTP──▶ FakeModelAPI (localhost:8000) ──▶ chat.deepseek.com (session akun kamu)
+OpenCode ──HTTP──▶ FakeModelAPI (localhost:8000) ──▶ chat.deepseek.com (sesi web Anda)
                     (format OpenAI ↔ format web)
 ```
+
+## Apa itu FakeModelAPI?
+
+FakeModelAPI berdiri di antara OpenCode dan layanan web DeepSeek:
+
+- **Bagi OpenCode**, ia tampak seperti provider OpenAI biasa: endpoint `http://localhost:8000/v1` dengan `/chat/completions` (streaming & non-streaming), dan emulasi **tool call native** (`tool_calls` di OpenAI format).
+- **Bagi DeepSeek**, ia memanfaatkan sesi web pribadi Anda (token + cookies hasil login manual via browser), tanpa memerlukan kunci API terpisah.
+
+Dengan begitu, fitur OpenCode penuh tetap berfungsi: agent mode, tool execution, permission per tool, model switching via `/models`.
+
+## Kepatuhan & Penggunaan yang Bertanggung Jawab
+
+Sebelum memakai tool ini, pastikan Anda memahami hal berikut:
+
+- Gunakan **hanya akun milik Anda sendiri**. Berbagi akun, membeli akun, atau membuat banyak akun untuk menghindari batasan tidak dibenarkan.
+- Anda bertanggung jawab penuh untuk mematuhi **Syarat Layanan, Kebijakan Privasi, dan ketentuan penggunaan** dari penyedia layanan web (mis. DeepSeek) yang berlaku saat Anda menggunakannya.
+- Tool ini ditujukan untuk **penggunaan pribadi dan pengembangan**. Hormati batas wajar pemakaian dan rate limit; jangan gunakan untuk otomatisasi berskala besar.
+- Jika penyedia membatasi, menonaktifkan, atau melarang pemakaian semacam ini, **hentikan penggunaan** dan jangan mengelak dari pembatasan tersebut.
+- Proyek ini **tidak berafiliasi, didukung, atau disetujui** oleh DeepSeek, OpenAI, maupun OpenCode. Seluruh merek dagang adalah milik pemiliknya masing-masing.
+
+## Model
+
+Dua model dari web DeepSeek, keduanya dengan DeepThink aktif:
+
+| ID (OpenCode) | `model_type` web | Nama | Keterangan |
+|---|---|---|---|
+| `deepseek-chat` | `default` | DeepSeek-chat-Instant-Think-Search | model cepat bawaan |
+| `deepseek-reasoner` | `expert` | DeepSeek-chat-Expert-Think | model kuat, lebih lambat |
+
+Ganti model di OpenCode lewat `/models` — nama tampilan yang kamu set di `opencode.json` yang dipakai.
 
 ## Prasyarat
 
 - **Go 1.25+**
-- **Akun DeepSeek** (https://chat.deepseek.com) — gratis
-- **Chromium untuk Playwright** (dipakai `/login` untuk menangkap session):
+- **Akun DeepSeek** (https://chat.deepseek.com) — akun pribadi milik Anda sendiri
+- **Chromium untuk Playwright** (dipakai `/login` untuk menangkap sesi):
   ```bash
   go run github.com/mxschmitt/playwright-go/cmd/playwright@latest install chromium
   ```
@@ -57,7 +87,10 @@ Buat/ubah `opencode.json` di proyek kamu (atau `~/.config/opencode/opencode.json
       },
       "models": {
         "deepseek-chat": {
-          "name": "DeepSeek V3 Chat"
+          "name": "DeepSeek Chat"
+        },
+        "deepseek-reasoner": {
+          "name": "DeepSeek Expert"
         }
       }
     }
@@ -72,21 +105,29 @@ Lalu jalankan `opencode` dari direktori proyek tersebut — pastikan server Fake
 
 | Perintah  | Fungsi                                                        |
 |-----------|---------------------------------------------------------------|
-| `/login`  | Buka browser, tangkap session DeepSeek otomatis               |
-| `/logout` | Hapus session                                                 |
+| `/login`  | Buka browser, tangkap sesi DeepSeek otomatis                  |
+| `/logout` | Hapus sesi                                                    |
 | `/start`  | Nyalakan server API lokal di `localhost:8000`                 |
 | `/stop`   | Matikan server                                                |
 | `/status` | Status server & login                                         |
 | `/test`   | Tes koneksi AI (respon + waktu)                               |
+| `/doctor` | Pemeriksaan menyeluruh (config, sesi, koneksi)                |
+| `/config` | Tampilkan konfigurasi aktif                                   |
+| `/logs`   | Log aktivitas request server (ring buffer, 30 terakhir)       |
 | `/model`  | Pilih model                                                   |
-| `/clear`  | Bersihkan riwayat chat TUI                                    |
+| `/clear`  | Bersihkan riwayat chat TUI + reset percakapan                 |
 | `/exit`   | Keluar (atau `/quit`, Ctrl+C)                                 |
 
 Tombol: `Tab` ganti provider, `Ctrl+P` command palette.
 
-## Peringatan
+## Catatan Teknis
 
-- Ini memakai **API web tidak resmi** (reverse-engineered) — DeepSeek bisa mengubah protokol kapan saja, dan pemakaian melanggar syarat layanan web-nya; gunakan dengan akun yang tidak masalah bila dibatasi.
-- Session bisa kedaluwarsa → `/login` ulang.
-- Server hanya menerima koneksi **loopback** (localhost) demi keamanan.
-- Tool call dieksekusi oleh OpenCode dengan sistem permission-nya sendiri (persetujuan per tool, mode plan dihormati) — proxy tidak pernah menjalankan tool.
+- **Sesi bisa kedaluwarsa** → `/login` ulang.
+- **Server hanya menerima koneksi loopback** (localhost) demi keamanan.
+- **Tool call dieksekusi oleh OpenCode** dengan sistem permission-nya sendiri (persetujuan per tool, mode plan dihormati) — proxy tidak pernah menjalankan tool.
+- **Thread web**: request berisi riwayat lengkap (opencode/klien API) selalu memulai thread baru yang bersih; chat TUI multi-turn (1 pesan per turn) meneruskan rantai percakapan.
+- **Teks thinking (DeepThink) difilter** agar tidak bocor ke jawaban.
+- **Model terkunci saat thread web dibuat** — ganti model otomatis membuat sesi/thread baru.
+- **Log request**: di TUI aktif log tidak dicetak ke layar (biar TUI tidak rusak), lihat lewat `/logs`; di mode `-headless` log dicetak ke stdout.
+- **Konfigurasi**: prioritas `~/.fakeapi/config.json` → env `FAKEAPI_*` → flag CLI. Jalankan `fakeapi config init` untuk membuat file config.
+- **Terminal minimal 80x24** untuk TUI.
